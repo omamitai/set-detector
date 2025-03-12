@@ -16,9 +16,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
-# Create directory for models
-RUN mkdir -p models/Characteristics/11022025 models/Shape/15052024 models/Card/16042024
-
 # Expose port
 EXPOSE 5000
 
