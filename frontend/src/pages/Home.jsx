@@ -35,7 +35,7 @@ export default function Home() {
       
       setCurrentSession(session);
       
-      // If no sets detected, show a friendly message
+      // If no sets detected, show a friendly message but still show the processed image
       if (result.detected_sets.length === 0) {
         setError("No valid SETs found in the image. Try a different layout or make sure all cards are clearly visible.");
       }
@@ -71,12 +71,14 @@ export default function Home() {
           </Alert>
         )}
         
-        <div className="max-w-md mx-auto mb-12">
-          <ImageUploader 
-            onUpload={handleUpload}
-            isUploading={isUploading}
-          />
-        </div>
+        {!currentSession ? (
+          <div className="max-w-md mx-auto mb-12">
+            <ImageUploader 
+              onUpload={handleUpload}
+              isUploading={isUploading}
+            />
+          </div>
+        ) : null}
         
         <ResultsView session={currentSession} />
         
