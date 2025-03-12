@@ -1,5 +1,5 @@
 import React from 'react';
-import { Github, BookOpen, Moon } from "lucide-react";
+import { Github, BookOpen } from "lucide-react";
 
 export default function Layout({ children }) {
   return (
