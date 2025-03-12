@@ -11,7 +11,7 @@ services:
     volumes:
       - ./backend/uploads:/app/uploads
       - ./backend/results:/app/results
-      - ./backend/models:/app/models
+      - ./models:/app/models
     environment:
       - FLASK_ENV=production
       - LOG_LEVEL=INFO
