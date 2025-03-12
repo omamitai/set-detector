@@ -1,12 +1,15 @@
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import os
 import uuid
 import cv2
 import numpy as np
+import logging
+import io
 from werkzeug.utils import secure_filename
 from set_detector import identify_sets
 
+# Initialize Flask app
 app = Flask(__name__)
 CORS(app)
 
@@ -14,103 +17,102 @@ CORS(app)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('app.log')
-    ]
+    handlers=[logging.StreamHandler()]
 )
 
-UPLOAD_FOLDER = 'uploads'
-RESULT_FOLDER = 'results'
+# Allowed file extensions
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
+app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB max file size
 
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(RESULT_FOLDER, exist_ok=True)
-
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['RESULT_FOLDER'] = RESULT_FOLDER
-app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB max
+# In-memory session storage
+current_sessions = {}
 
 def allowed_file(filename):
+    """Check if uploaded file has an allowed extension"""
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 @app.route('/api/detect_sets', methods=['POST'])
 def detect_sets():
+    """Handles image uploads and detects SETs."""
     if 'file' not in request.files:
-        return jsonify({'error': 'No file part'}), 400
+        return jsonify({'error': 'No file provided'}), 400
     
     file = request.files['file']
     if file.filename == '':
         return jsonify({'error': 'No selected file'}), 400
     
     if file and allowed_file(file.filename):
-        # Generate unique filename
-        unique_id = str(uuid.uuid4())
-        filename = secure_filename(file.filename)
-        base, ext = os.path.splitext(filename)
-        unique_filename = f"{unique_id}{ext}"
-        
-        # Save original image
-        file_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
-        file.save(file_path)
+        session_id = str(uuid.uuid4())
         
         try:
-            # Read and process image
-            img = cv2.imread(file_path)
+            # Read image into memory
+            file_data = file.read()
+            nparr = np.frombuffer(file_data, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            
             if img is None:
-                app.logger.error(f"Failed to read image at {file_path}")
-                return jsonify({'error': 'Could not read uploaded image'}), 400
+                app.logger.error("Failed to decode image")
+                return jsonify({'error': 'Could not process uploaded image'}), 400
                 
-            app.logger.info(f"Successfully read image with shape {img.shape}")
+            app.logger.info(f"Image uploaded with shape {img.shape}")
             
             # Run SET detection
             found_sets, annotated_img = identify_sets(img)
             
-            # Save annotated image
-            result_filename = f"{unique_id}_result{ext}"
-            result_path = os.path.join(app.config['RESULT_FOLDER'], result_filename)
-            cv2.imwrite(result_path, annotated_img)
+            # Encode images to send back to client
+            _, original_buffer = cv2.imencode('.jpg', img)
+            _, result_buffer = cv2.imencode('.jpg', annotated_img)
             
-            # Prepare response
+            # Store session results temporarily
+            current_sessions[session_id] = {
+                'original': original_buffer,
+                'result': result_buffer
+            }
+            
+            # Format response data
             detected_sets = []
             for set_info in found_sets:
-                cards = []
-                for card in set_info['cards']:
-                    card_str = f"{card['Count']} {card['Fill']} {card['Color']} {card['Shape']}"
-                    cards.append(card_str)
-                    
+                cards = [f"{card['Count']} {card['Fill']} {card['Color']} {card['Shape']}" 
+                         for card in set_info['cards']]
+                
                 coordinates = [{'x': (box[0] + box[2]) // 2, 'y': (box[1] + box[3]) // 2} 
-                              for box in [card['Coordinates'] for card in set_info['cards']]]
+                               for box in [card['Coordinates'] for card in set_info['cards']]]
                 
                 detected_sets.append({
                     'cards': cards,
                     'coordinates': coordinates
                 })
             
-            # Return results
             return jsonify({
-                'original_image_url': f"/api/images/{unique_filename}",
-                'processed_image_url': f"/api/images/{result_filename}",
+                'session_id': session_id,
+                'original_image_url': f"/api/images/{session_id}/original",
+                'processed_image_url': f"/api/images/{session_id}/result",
                 'detected_sets': detected_sets
             })
-            
+        
         except Exception as e:
             app.logger.error(f"Error processing image: {str(e)}", exc_info=True)
-            return jsonify({'error': f'Error processing image: {str(e)}'}), 500
+            return jsonify({'error': 'Internal server error'}), 500
     
-    return jsonify({'error': 'Invalid file type. Please upload a PNG or JPEG image.'}), 400
+    return jsonify({'error': 'Invalid file type. Only PNG and JPEG are supported.'}), 400
 
-@app.route('/api/images/<filename>')
-def get_image(filename):
-    # Check if it's a result image
-    if filename.find('_result') > 0:
-        return send_from_directory(app.config['RESULT_FOLDER'], filename)
-    # Otherwise, it's an original image
-    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+@app.route('/api/images/<session_id>/<image_type>')
+def get_image(session_id, image_type):
+    """Returns processed images from memory."""
+    if session_id not in current_sessions:
+        return jsonify({'error': 'Image not found or session expired'}), 404
+        
+    if image_type not in ['original', 'result']:
+        return jsonify({'error': 'Invalid image type'}), 400
+    
+    img_buffer = current_sessions[session_id][image_type]
+    img_io = io.BytesIO(img_buffer)
+    img_io.seek(0)
+    return send_file(img_io, mimetype='image/jpeg')
 
 @app.route('/api/health')
 def health_check():
-    """Health check endpoint for container monitoring"""
+    """Health check endpoint for monitoring."""
     return jsonify({'status': 'healthy'}), 200
 
 if __name__ == '__main__':
