@@ -19,5 +19,5 @@ COPY . .
 # Expose port
 EXPOSE 5000
 
-# Command to run the application
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "app:app"]
+# Command to run the application with configurable worker count
+CMD ["sh", "-c", "gunicorn --workers=${MAX_WORKERS:-2} --timeout=120 --bind 0.0.0.0:5000 app:app"]
