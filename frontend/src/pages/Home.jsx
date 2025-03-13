@@ -1,24 +1,58 @@
-import React, { useState } from 'react';
-import { UploadFile } from '@/integrations/Core';
+import React, { useState, useEffect } from 'react';
+import { UploadFile, checkApiHealth } from '@/integrations/Core';
 import ImageUploader from '../components/upload/ImageUploader';
 import ResultsView from '../components/results/ResultsView';
 import HowItWorks from '../components/home/HowItWorks';
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { AlertCircle } from "lucide-react";
+import { AlertCircle, WifiOff } from "lucide-react";
 import { GameSession } from '../entities/GameSession';
 
 export default function Home() {
   const [isUploading, setIsUploading] = useState(false);
   const [error, setError] = useState(null);
   const [session, setSession] = useState(null);
+  const [backendStatus, setBackendStatus] = useState({ healthy: true });
+
+  // Check backend health on component mount
+  useEffect(() => {
+    const checkHealth = async () => {
+      const status = await checkApiHealth();
+      setBackendStatus(status);
+    };
+    
+    checkHealth();
+    
+    // Periodically check health
+    const interval = setInterval(checkHealth, 60000); // Check every minute
+    
+    return () => clearInterval(interval);
+  }, []);
 
   const handleUpload = async (file) => {
     setIsUploading(true);
     setError(null);
     
+    // Check backend health before attempting upload
+    if (!backendStatus.healthy) {
+      setError("The server is currently unavailable. Please try again later.");
+      setIsUploading(false);
+      return;
+    }
+    
     try {
-      // Call the actual API rather than using mock data
+      // Call the actual API
       const response = await UploadFile({ file });
+      
+      // Validate response structure
+      if (!response || !response.session_id) {
+        throw new Error('Invalid response from server');
+      }
+      
+      // Check if sets were found
+      if (response.detected_sets && response.detected_sets.length === 0) {
+        // Not treating this as an error, but could show a specific message
+        console.log('No sets found in the image');
+      }
       
       // Create a proper session object
       const newSession = await GameSession.create({
@@ -32,7 +66,17 @@ export default function Home() {
       setSession(newSession);
     } catch (err) {
       console.error("Error processing image:", err);
-      setError(err.message || "We couldn't process your image. Please try again with a clearer photo.");
+      
+      // More specific error messages based on error type
+      if (err.message.includes('timeout') || err.message.includes('timed out')) {
+        setError("The server took too long to process your image. Try a smaller or clearer photo.");
+      } else if (err.message.includes('size')) {
+        setError("Your image exceeds the 10MB size limit. Please resize it and try again.");
+      } else if (err.message.includes('type') || err.message.includes('supported')) {
+        setError("Only JPEG and PNG images are supported. Please select a valid image.");
+      } else {
+        setError(err.message || "We couldn't process your image. Please try again with a clearer photo.");
+      }
     } finally {
       setIsUploading(false);
     }
@@ -40,6 +84,7 @@ export default function Home() {
 
   const handleReset = () => {
     setSession(null);
+    setError(null);
   };
 
   return (
@@ -51,6 +96,15 @@ export default function Home() {
             Upload a photo of your SET game layout and we'll find all valid sets
           </p>
         </div>
+
+        {!backendStatus.healthy && (
+          <Alert variant="destructive" className="mb-6 max-w-md mx-auto rounded-xl bg-amber-50 border-amber-100 text-amber-800">
+            <WifiOff className="h-4 w-4" />
+            <AlertDescription className="sf-pro-text">
+              Server connection issues detected. Some features may be unavailable.
+            </AlertDescription>
+          </Alert>
+        )}
 
         {error && (
           <Alert variant="destructive" className="mb-6 max-w-md mx-auto rounded-xl bg-red-50 border-red-100 text-red-800">
@@ -64,6 +118,7 @@ export default function Home() {
             <ImageUploader 
               onUpload={handleUpload}
               isUploading={isUploading}
+              disabled={!backendStatus.healthy}
             />
           ) : (
             <ResultsView 
