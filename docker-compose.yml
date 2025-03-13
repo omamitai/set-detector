@@ -9,6 +9,7 @@ services:
     restart: always
     volumes:
       - ./models:/app/models:ro
+      - ./backend/logs:/app/logs
     environment:
       - FLASK_ENV=production
       - LOG_LEVEL=INFO
