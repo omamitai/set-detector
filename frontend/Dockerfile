@@ -28,11 +28,16 @@ FROM nginx:alpine
 COPY --from=build /app/build /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
-# Add curl for healthcheck
-RUN apk --no-cache add curl
+# Create directory for SSL certificates
+RUN mkdir -p /etc/nginx/ssl
+
+# Add curl and openssl for healthcheck and certificate generation
+RUN apk --no-cache add curl openssl
 
 # Create a simple health endpoint
-RUN echo "healthy" > /usr/share/nginx/html/health
+RUN echo "healthy" > /usr/share/nginx/html/frontend-health
 
-EXPOSE 80
+# Expose both HTTP and HTTPS ports
+EXPOSE 80 443
+
 CMD ["nginx", "-g", "daemon off;"]
