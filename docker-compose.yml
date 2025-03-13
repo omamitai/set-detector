@@ -1,4 +1,4 @@
-version: '3'
+version: '3.8'
 
 services:
   backend:
@@ -6,15 +6,15 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     container_name: set-detector-backend
-    ports:
-      - "5000:5000"
+    restart: always
     volumes:
-      - ./models:/app/models
+      - ./models:/app/models:ro
+      - backend_logs:/app/logs
     environment:
       - FLASK_ENV=production
       - LOG_LEVEL=INFO
-      - MAX_WORKERS=2
-    restart: always
+      - MAX_WORKERS=${MAX_WORKERS:-2}
+      - PYTHONUNBUFFERED=1
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/api/health"]
       interval: 30s
@@ -26,21 +26,29 @@ services:
         limits:
           cpus: '1.5'
           memory: '3g'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - app-network
 
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        - REACT_APP_API_URL=/api
+        - NODE_ENV=production
     container_name: set-detector-frontend
+    restart: always
     ports:
       - "80:80"
     depends_on:
       - backend
-    environment:
-      - REACT_APP_API_URL=/api
-    restart: always
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:80"]
+      test: ["CMD", "curl", "-f", "http://localhost:80/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -49,3 +57,17 @@ services:
         limits:
           cpus: '0.5'
           memory: '512m'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  backend_logs:
