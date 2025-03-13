@@ -2,6 +2,13 @@
 const API_BASE = process.env.REACT_APP_API_URL || '';
 const API_ENDPOINT = process.env.REACT_APP_API_ENDPOINT || '/api';
 
+// Ensure API_ENDPOINT always has the correct format (ends with /)
+const getEndpointUrl = (path) => {
+  const baseEndpoint = API_ENDPOINT.endsWith('/') ? API_ENDPOINT : `${API_ENDPOINT}/`;
+  const cleanPath = path.startsWith('/') ? path.substring(1) : path;
+  return `${API_BASE}${baseEndpoint}${cleanPath}`;
+};
+
 export const UploadFile = async ({ file }) => {
   // Validate file size - 10MB limit
   if (file.size > 10 * 1024 * 1024) {
@@ -17,13 +24,13 @@ export const UploadFile = async ({ file }) => {
   formData.append('file', file);
 
   try {
-    console.log(`Uploading file to ${API_ENDPOINT}/detect_sets`);
+    console.log(`Uploading file to ${getEndpointUrl('detect_sets')}`);
     
     // Add timeout for long-running requests - match with backend timeout (120s)
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 120000); // 120-second timeout to match Gunicorn
     
-    const response = await fetch(`${API_ENDPOINT}/detect_sets`, {
+    const response = await fetch(getEndpointUrl('detect_sets'), {
       method: 'POST',
       body: formData,
       signal: controller.signal
@@ -61,7 +68,7 @@ export const UploadFile = async ({ file }) => {
 
 export const checkApiHealth = async () => {
   try {
-    const response = await fetch(`${API_ENDPOINT}/health`, {
+    const response = await fetch(getEndpointUrl('health'), {
       method: 'GET',
       headers: {
         'Accept': 'application/json',
