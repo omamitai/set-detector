@@ -49,6 +49,8 @@ export const UploadFile = async ({ file }) => {
           // JSON parsing failed
           if (response.status === 413) {
             throw new Error('File size exceeds 10MB limit');
+          } else if (response.status === 503) {
+            throw new Error('Server is currently busy. Please try again later.');
           }
           throw new Error(`Server error: ${response.status}`);
         }
@@ -60,6 +62,9 @@ export const UploadFile = async ({ file }) => {
   } catch (error) {
     if (error.name === 'AbortError') {
       throw new Error('Request timed out. The server took too long to process your image.');
+    }
+    if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
+      throw new Error('Network error. Check your connection and try again.');
     }
     console.error('Upload failed:', error);
     throw error;
@@ -73,6 +78,8 @@ export const checkApiHealth = async () => {
       headers: {
         'Accept': 'application/json',
       },
+      // Add a short timeout for health checks
+      signal: AbortSignal.timeout(5000)
     });
     
     if (!response.ok) {
