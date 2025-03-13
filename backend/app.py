@@ -167,6 +167,45 @@ def detect_sets():
     
     return jsonify({'error': 'Invalid file type. Only PNG and JPEG are supported.'}), 400
 
+@app.route('/api/images/<session_id>/<image_type>')
+def get_session_image(session_id, image_type):
+    """Serves images from in-memory session storage."""
+    # Validate session exists
+    if session_id not in current_sessions:
+        app.logger.warning(f"Session {session_id} not found or expired")
+        return jsonify({'error': 'Session not found or expired'}), 404
+    
+    # Validate image type
+    if image_type not in ['original', 'result']:
+        app.logger.warning(f"Invalid image type requested: {image_type}")
+        return jsonify({'error': 'Invalid image type requested'}), 400
+    
+    session_data = current_sessions[session_id]
+    
+    # Get the appropriate image buffer
+    if image_type == 'original':
+        image_buffer = session_data.get('original')
+    else:
+        image_buffer = session_data.get('result')
+    
+    if image_buffer is None:
+        app.logger.warning(f"Image {image_type} not found in session {session_id}")
+        return jsonify({'error': 'Image not found in session'}), 404
+    
+    # Update session timestamp to extend TTL
+    session_data['timestamp'] = time.time()
+    
+    # Create in-memory file-like object
+    image_io = io.BytesIO(image_buffer)
+    
+    # Return the image with proper content type
+    return send_file(
+        image_io,
+        mimetype='image/jpeg',
+        as_attachment=False,
+        download_name=f"{session_id}_{image_type}.jpg"
+    )
+
 @app.route('/api/health')
 def health_check():
     """Enhanced health check endpoint for monitoring."""
