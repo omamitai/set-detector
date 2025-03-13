@@ -10,8 +10,12 @@ export class GameSession {
   }
 
   static async create(data) {
-    // No need for complex transformation - the backend already provides the right format
-    // Just handle the case where detected_sets might be undefined
+    // Validation to ensure data has required fields
+    if (!data) {
+      throw new Error('No data provided to create GameSession');
+    }
+    
+    // Ensure detected_sets exists
     if (!data.detected_sets) {
       data.detected_sets = [];
     }
@@ -30,14 +34,21 @@ export class GameSession {
 
   // Utility method to ensure image URLs have the correct base path
   static ensureCorrectImageUrl(url) {
-    // If the URL is already absolute or starts with the correct path, return it as is
-    if (url.startsWith('http') || url.startsWith('/api/')) {
+    // If the URL is already absolute, return it as is
+    if (url.startsWith('http')) {
       return url;
+    }
+    
+    // If the URL already has the /api prefix, add the API_BASE
+    if (url.startsWith('/api/')) {
+      const API_BASE = process.env.REACT_APP_API_URL || '';
+      return `${API_BASE}${url}`;
     }
     
     // Otherwise, ensure it has the /api prefix
     const API_BASE = process.env.REACT_APP_API_URL || '';
-    return `${API_BASE}${url.startsWith('/') ? url : `/${url}`}`;
+    const API_ENDPOINT = process.env.REACT_APP_API_ENDPOINT || '/api';
+    return `${API_BASE}${API_ENDPOINT}${url.startsWith('/') ? url : `/${url}`}`;
   }
 
   // Utility methods
