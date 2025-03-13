@@ -13,7 +13,15 @@ from set_detector import identify_sets
 
 # Initialize Flask app
 app = Flask(__name__)
-CORS(app)
+
+# More secure CORS configuration
+if os.environ.get('FLASK_ENV') == 'production':
+    # In production, restrict to allowed origins
+    allowed_origins = os.environ.get('ALLOWED_ORIGINS', 'https://yourdomain.com').split(',')
+    CORS(app, resources={r"/api/*": {"origins": allowed_origins}})
+else:
+    # In development, allow all origins
+    CORS(app)
 
 # Configure logging
 logging.basicConfig(
