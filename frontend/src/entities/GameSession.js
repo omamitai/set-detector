@@ -7,6 +7,10 @@ export class GameSession {
     this.status = data.status || 'pending';
     this.created_at = data.created_at || new Date().toISOString();
     this.error = data.error || null;
+    
+    // Ensure URLs are properly formatted
+    this.original_image_url = GameSession.ensureCorrectImageUrl(this.original_image_url);
+    this.processed_image_url = GameSession.ensureCorrectImageUrl(this.processed_image_url);
   }
 
   static async create(data) {
@@ -28,11 +32,11 @@ export class GameSession {
     
     // Validate and process image URLs if present
     if (typeof data.original_image_url === 'string') {
-      validatedData.original_image_url = this.ensureCorrectImageUrl(data.original_image_url);
+      validatedData.original_image_url = data.original_image_url;
     }
     
     if (typeof data.processed_image_url === 'string') {
-      validatedData.processed_image_url = this.ensureCorrectImageUrl(data.processed_image_url);
+      validatedData.processed_image_url = data.processed_image_url;
     }
     
     // Validate detected_sets structure
