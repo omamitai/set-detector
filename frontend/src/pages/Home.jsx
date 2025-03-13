@@ -1,41 +1,45 @@
-
 import React, { useState } from 'react';
 import { UploadFile } from '@/integrations/Core';
 import ImageUploader from '../components/upload/ImageUploader';
-import ProcessedImage from '../components/results/ProcessedImage';
+import ResultsView from '../components/results/ResultsView';
 import HowItWorks from '../components/home/HowItWorks';
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AlertCircle } from "lucide-react";
+import { GameSession } from '../entities/GameSession';
 
 export default function Home() {
   const [isUploading, setIsUploading] = useState(false);
   const [error, setError] = useState(null);
-  const [processedImage, setProcessedImage] = useState(null);
+  const [session, setSession] = useState(null);
 
   const handleUpload = async (file) => {
     setIsUploading(true);
     setError(null);
     
     try {
-      const { file_url } = await UploadFile({ file });
-      setTimeout(() => {
-        setProcessedImage({
-          original_url: file_url,
-          processed_url: file_url,
-          sets_found: Math.floor(Math.random() * 5) + 1
-        });
-        setIsUploading(false);
-      }, 1800);
+      // Call the actual API rather than using mock data
+      const response = await UploadFile({ file });
       
+      // Create a proper session object
+      const newSession = await GameSession.create({
+        session_id: response.session_id,
+        original_image_url: response.original_image_url,
+        processed_image_url: response.processed_image_url,
+        detected_sets: response.detected_sets,
+        status: 'completed'
+      });
+      
+      setSession(newSession);
     } catch (err) {
       console.error("Error processing image:", err);
-      setError("We couldn't process your image. Please try again with a clearer photo.");
+      setError(err.message || "We couldn't process your image. Please try again with a clearer photo.");
+    } finally {
       setIsUploading(false);
     }
   };
 
   const handleReset = () => {
-    setProcessedImage(null);
+    setSession(null);
   };
 
   return (
@@ -56,13 +60,16 @@ export default function Home() {
         )}
 
         <div className="max-w-lg mx-auto mb-12">
-          {!processedImage ? (
+          {!session ? (
             <ImageUploader 
               onUpload={handleUpload}
               isUploading={isUploading}
             />
           ) : (
-            <ProcessedImage image={processedImage} onReset={handleReset} />
+            <ResultsView 
+              session={session} 
+              onReset={handleReset} 
+            />
           )}
         </div>
 
