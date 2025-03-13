@@ -9,6 +9,7 @@ import io
 import time
 import gc  # Garbage collection
 import resource
+import sys
 from werkzeug.utils import secure_filename
 from set_detector import identify_sets
 
@@ -17,8 +18,14 @@ app = Flask(__name__)
 
 # More secure CORS configuration
 if os.environ.get('FLASK_ENV') == 'production':
-    # In production, restrict to allowed origins
-    allowed_origins = os.environ.get('ALLOWED_ORIGINS', 'http://localhost').split(',')
+    # In production, ALLOWED_ORIGINS must be explicitly configured
+    allowed_origins = os.environ.get('ALLOWED_ORIGINS')
+    if not allowed_origins:
+        app.logger.warning("ALLOWED_ORIGINS environment variable not set in production! Setting to '*' temporarily, but this should be configured properly.")
+        allowed_origins = '*'
+    else:
+        allowed_origins = allowed_origins.split(',')
+    app.logger.info(f"Configuring CORS with allowed origins: {allowed_origins}")
     CORS(app, resources={r"/api/*": {"origins": allowed_origins}})
 else:
     # In development, allow all origins
@@ -40,31 +47,81 @@ ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
 ALLOWED_MIME_TYPES = {'image/jpeg', 'image/png', 'image/jpg'}
 app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB max file size
 
-# In-memory session storage with TTL
+# In-memory session storage with configurable limits
+MAX_SESSIONS = int(os.environ.get('MAX_SESSIONS', '20'))
+SESSION_TTL = int(os.environ.get('SESSION_TTL', '300'))  # 5 minutes default
+CLEANUP_INTERVAL = int(os.environ.get('CLEANUP_INTERVAL', '60'))  # Check every minute
+MAX_MEMORY_PERCENT = int(os.environ.get('MAX_MEMORY_PERCENT', '80'))  # Memory threshold
 current_sessions = {}
-SESSION_TTL = 5 * 60  # Reduced to 5 minutes TTL for sessions
-CLEANUP_INTERVAL = 60  # Check for expired sessions every minute
 last_cleanup = time.time()
 
-def cleanup_old_sessions():
-    """Remove session data older than TTL"""
+def check_memory_pressure():
+    """Check if system is under memory pressure"""
+    try:
+        mem_info = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        # Convert to MB (platform-specific)
+        if sys.platform == 'darwin':  # macOS
+            mem_usage_mb = mem_info / 1024 / 1024
+        else:  # Linux and others
+            mem_usage_mb = mem_info / 1024
+            
+        # Get total memory if possible
+        try:
+            with open('/proc/meminfo', 'r') as f:
+                for line in f:
+                    if 'MemTotal' in line:
+                        total_mem_kb = int(line.split()[1])
+                        total_mem_mb = total_mem_kb / 1024
+                        mem_percent = (mem_usage_mb / total_mem_mb) * 100
+                        app.logger.debug(f"Memory usage: {mem_usage_mb:.2f}MB ({mem_percent:.1f}%)")
+                        return mem_percent > MAX_MEMORY_PERCENT
+        except:
+            # Fall back to a simpler check if we can't get system memory info
+            app.logger.debug(f"Memory usage: {mem_usage_mb:.2f}MB (cannot determine percentage)")
+            return mem_usage_mb > 1024  # Assume pressure above 1GB
+            
+    except Exception as e:
+        app.logger.warning(f"Error checking memory pressure: {e}")
+        return False
+        
+    return False
+
+def cleanup_old_sessions(force=False):
+    """Remove session data older than TTL or when memory limits are approached"""
     global last_cleanup
     now = time.time()
     
-    # Only run cleanup periodically to reduce overhead
-    if now - last_cleanup < CLEANUP_INTERVAL:
+    # Only run cleanup periodically to reduce overhead, unless forced
+    if not force and now - last_cleanup < CLEANUP_INTERVAL:
         return
         
     app.logger.info("Running session cleanup")
     last_cleanup = now
     expired_sessions = []
     
+    # Check if we're approaching memory limits
+    memory_pressure = check_memory_pressure()
+    
     for session_id, session_data in current_sessions.items():
+        # Remove expired sessions
         if now - session_data.get('timestamp', 0) > SESSION_TTL:
             expired_sessions.append(session_id)
+        # If under memory pressure, be more aggressive with cleanup
+        elif memory_pressure and len(current_sessions) > MAX_SESSIONS // 2:
+            # Sort by age and keep only recent sessions
+            sessions_by_age = sorted(
+                current_sessions.items(), 
+                key=lambda x: x[1].get('timestamp', 0)
+            )
+            # Keep newest half of sessions
+            to_keep = sessions_by_age[-(MAX_SESSIONS//2):]
+            keep_ids = [s[0] for s in to_keep]
+            
+            if session_id not in keep_ids:
+                expired_sessions.append(session_id)
     
     for session_id in expired_sessions:
-        app.logger.info(f"Removing expired session: {session_id}")
+        app.logger.info(f"Removing session: {session_id}")
         current_sessions.pop(session_id, None)
         
     # Force garbage collection
@@ -84,8 +141,13 @@ def detect_sets():
     cleanup_old_sessions()
     
     # Limit active sessions to prevent memory overload
-    if len(current_sessions) >= 20:  # Maximum 20 concurrent sessions
-        return jsonify({'error': 'Server is currently busy. Please try again in a few minutes.'}), 503
+    if len(current_sessions) >= MAX_SESSIONS or check_memory_pressure():
+        # Force cleanup to see if we can free up space
+        cleanup_old_sessions(force=True)
+        
+        # If still over limit after cleanup, return busy error
+        if len(current_sessions) >= MAX_SESSIONS or check_memory_pressure():
+            return jsonify({'error': 'Server is currently busy. Please try again in a few minutes.'}), 503
     
     if 'file' not in request.files:
         return jsonify({'error': 'No file provided'}), 400
@@ -222,7 +284,9 @@ def health_check():
             'active_sessions': len(current_sessions),
             'memory_usage_mb': memory_usage_mb,
             'models_loaded': models_loaded,
-            'worker_count': MAX_WORKERS
+            'worker_count': MAX_WORKERS,
+            'max_sessions': MAX_SESSIONS,
+            'session_ttl_seconds': SESSION_TTL
         }
         
         return jsonify({
