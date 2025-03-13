@@ -39,16 +39,19 @@ export class GameSession {
       return url;
     }
     
-    // If the URL already has the /api prefix, add the API_BASE
+    const API_BASE = process.env.REACT_APP_API_URL || '';
+    
+    // If the URL already has the correct path structure, just add the API_BASE
     if (url.startsWith('/api/')) {
-      const API_BASE = process.env.REACT_APP_API_URL || '';
       return `${API_BASE}${url}`;
     }
     
-    // Otherwise, ensure it has the /api prefix
-    const API_BASE = process.env.REACT_APP_API_URL || '';
+    // Otherwise, construct the URL with proper path
     const API_ENDPOINT = process.env.REACT_APP_API_ENDPOINT || '/api';
-    return `${API_BASE}${API_ENDPOINT}${url.startsWith('/') ? url : `/${url}`}`;
+    const formattedEndpoint = API_ENDPOINT.endsWith('/') ? API_ENDPOINT : `${API_ENDPOINT}/`;
+    const formattedUrl = url.startsWith('/') ? url.substring(1) : url;
+    
+    return `${API_BASE}${formattedEndpoint}${formattedUrl}`;
   }
 
   // Utility methods
