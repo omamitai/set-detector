@@ -6,6 +6,13 @@ const API_ENDPOINT = process.env.REACT_APP_API_ENDPOINT || '/api';
 const getEndpointUrl = (path) => {
   const baseEndpoint = API_ENDPOINT.endsWith('/') ? API_ENDPOINT : `${API_ENDPOINT}/`;
   const cleanPath = path.startsWith('/') ? path.substring(1) : path;
+  
+  // If we're using relative paths (empty API_BASE), just return the endpoint + path
+  if (!API_BASE) {
+    return `${baseEndpoint}${cleanPath}`;
+  }
+  
+  // Otherwise, construct the full URL
   return `${API_BASE}${baseEndpoint}${cleanPath}`;
 };
 
