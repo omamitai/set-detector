@@ -8,6 +8,7 @@ import logging
 import io
 import time
 import gc  # Garbage collection
+import resource
 from werkzeug.utils import secure_filename
 from set_detector import identify_sets
 
@@ -17,7 +18,7 @@ app = Flask(__name__)
 # More secure CORS configuration
 if os.environ.get('FLASK_ENV') == 'production':
     # In production, restrict to allowed origins
-    allowed_origins = os.environ.get('ALLOWED_ORIGINS', 'https://yourdomain.com').split(',')
+    allowed_origins = os.environ.get('ALLOWED_ORIGINS', 'http://localhost').split(',')
     CORS(app, resources={r"/api/*": {"origins": allowed_origins}})
 else:
     # In development, allow all origins
@@ -36,11 +37,12 @@ app.logger.info(f"Configured with MAX_WORKERS={MAX_WORKERS}")
 
 # Allowed file extensions
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
+ALLOWED_MIME_TYPES = {'image/jpeg', 'image/png', 'image/jpg'}
 app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB max file size
 
 # In-memory session storage with TTL
 current_sessions = {}
-SESSION_TTL = 10 * 60  # 10 minutes TTL for sessions
+SESSION_TTL = 5 * 60  # Reduced to 5 minutes TTL for sessions
 CLEANUP_INTERVAL = 60  # Check for expired sessions every minute
 last_cleanup = time.time()
 
@@ -69,15 +71,21 @@ def cleanup_old_sessions():
     gc.collect()
     app.logger.info(f"Cleanup finished. Removed {len(expired_sessions)} sessions. {len(current_sessions)} active sessions remain.")
 
-def allowed_file(filename):
-    """Check if uploaded file has an allowed extension"""
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+def allowed_file(file):
+    """Check if uploaded file has an allowed extension and MIME type"""
+    has_valid_extension = '.' in file.filename and file.filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+    has_valid_mime = file.content_type in ALLOWED_MIME_TYPES
+    return has_valid_extension and has_valid_mime
 
 @app.route('/api/detect_sets', methods=['POST'])
 def detect_sets():
     """Handles image uploads and detects SETs."""
     # Cleanup old sessions
     cleanup_old_sessions()
+    
+    # Limit active sessions to prevent memory overload
+    if len(current_sessions) >= 20:  # Maximum 20 concurrent sessions
+        return jsonify({'error': 'Server is currently busy. Please try again in a few minutes.'}), 503
     
     if 'file' not in request.files:
         return jsonify({'error': 'No file provided'}), 400
@@ -86,7 +94,7 @@ def detect_sets():
     if file.filename == '':
         return jsonify({'error': 'No selected file'}), 400
     
-    if file and allowed_file(file.filename):
+    if file and allowed_file(file):
         session_id = str(uuid.uuid4())
         
         try:
@@ -159,34 +167,32 @@ def detect_sets():
     
     return jsonify({'error': 'Invalid file type. Only PNG and JPEG are supported.'}), 400
 
-@app.route('/api/images/<session_id>/<image_type>')
-def get_image(session_id, image_type):
-    """Returns processed images from memory."""
-    if session_id not in current_sessions:
-        return jsonify({'error': 'Image not found or session expired'}), 404
-        
-    if image_type not in ['original', 'result']:
-        return jsonify({'error': 'Invalid image type'}), 400
-    
-    # Update session timestamp to keep it alive
-    current_sessions[session_id]['timestamp'] = time.time()
-    
-    img_buffer = current_sessions[session_id][image_type]
-    img_io = io.BytesIO(img_buffer)
-    img_io.seek(0)
-    return send_file(img_io, mimetype='image/jpeg')
-
 @app.route('/api/health')
 def health_check():
-    """Health check endpoint for monitoring."""
-    # Return memory usage stats
-    memory_info = {
-        'active_sessions': len(current_sessions),
-    }
-    return jsonify({
-        'status': 'healthy',
-        'memory': memory_info
-    }), 200
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    """Enhanced health check endpoint for monitoring."""
+    try:
+        # Get memory usage
+        memory_usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        memory_usage_mb = memory_usage / 1024  # Convert to MB on Linux
+        
+        # Check if models are loaded
+        from set_detector import _model_cache
+        models_loaded = _model_cache.get('shape_model') is not None
+        
+        memory_info = {
+            'active_sessions': len(current_sessions),
+            'memory_usage_mb': memory_usage_mb,
+            'models_loaded': models_loaded,
+            'worker_count': MAX_WORKERS
+        }
+        
+        return jsonify({
+            'status': 'healthy',
+            'memory': memory_info
+        }), 200
+    except Exception as e:
+        app.logger.error(f"Health check error: {str(e)}", exc_info=True)
+        return jsonify({
+            'status': 'degraded',
+            'error': str(e)
+        }), 200  # Still return 200 but with degraded status
