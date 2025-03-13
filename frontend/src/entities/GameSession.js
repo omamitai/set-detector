@@ -10,21 +10,34 @@ export class GameSession {
   }
 
   static async create(data) {
-    // Format detected sets data if needed
-    if (data.detected_sets) {
-      // Ensure each set has the required format for the SetCard component
-      data.detected_sets = data.detected_sets.map(set => {
-        // If the API returns cards as objects, convert them to string representations
-        if (set.cards && Array.isArray(set.cards) && typeof set.cards[0] !== 'string') {
-          set.cards = set.cards.map(card => 
-            `${card.Count} ${card.Fill} ${card.Color} ${card.Shape}`
-          );
-        }
-        return set;
-      });
+    // No need for complex transformation - the backend already provides the right format
+    // Just handle the case where detected_sets might be undefined
+    if (!data.detected_sets) {
+      data.detected_sets = [];
+    }
+    
+    // Ensure all image URLs have proper formatting
+    if (data.original_image_url) {
+      data.original_image_url = this.ensureCorrectImageUrl(data.original_image_url);
+    }
+    
+    if (data.processed_image_url) {
+      data.processed_image_url = this.ensureCorrectImageUrl(data.processed_image_url);
     }
     
     return new GameSession(data);
+  }
+
+  // Utility method to ensure image URLs have the correct base path
+  static ensureCorrectImageUrl(url) {
+    // If the URL is already absolute or starts with the correct path, return it as is
+    if (url.startsWith('http') || url.startsWith('/api/')) {
+      return url;
+    }
+    
+    // Otherwise, ensure it has the /api prefix
+    const API_BASE = process.env.REACT_APP_API_URL || '';
+    return `${API_BASE}${url.startsWith('/') ? url : `/${url}`}`;
   }
 
   // Utility methods
