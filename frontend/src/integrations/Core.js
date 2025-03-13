@@ -1,5 +1,6 @@
 // Set API URL based on environment or default to relative path for production
-const API_URL = process.env.REACT_APP_API_URL || '/api';
+const API_BASE = process.env.REACT_APP_API_URL || '';
+const API_ENDPOINT = `${API_BASE}/api`;
 
 export const UploadFile = async ({ file }) => {
   // Validate file size - 10MB limit
@@ -16,13 +17,13 @@ export const UploadFile = async ({ file }) => {
   formData.append('file', file);
 
   try {
-    console.log(`Uploading file to ${API_URL}/detect_sets`);
+    console.log(`Uploading file to ${API_ENDPOINT}/detect_sets`);
     
     // Add timeout for long-running requests
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 60000); // 60-second timeout
     
-    const response = await fetch(`${API_URL}/detect_sets`, {
+    const response = await fetch(`${API_ENDPOINT}/detect_sets`, {
       method: 'POST',
       body: formData,
       signal: controller.signal
@@ -50,5 +51,38 @@ export const UploadFile = async ({ file }) => {
     }
     console.error('Upload failed:', error);
     throw error;
+  }
+};
+
+export const checkApiHealth = async () => {
+  try {
+    const response = await fetch(`${API_ENDPOINT}/health`, {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/json',
+      },
+    });
+    
+    if (!response.ok) {
+      return {
+        healthy: false,
+        status: response.status,
+        message: `Backend returned ${response.status}`
+      };
+    }
+    
+    const data = await response.json();
+    return {
+      healthy: data.status === 'healthy',
+      memory: data.memory,
+      status: response.status
+    };
+  } catch (error) {
+    console.error('Health check failed:', error);
+    return {
+      healthy: false,
+      message: error.message || 'Could not connect to server',
+      error
+    };
   }
 };
