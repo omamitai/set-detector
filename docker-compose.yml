@@ -16,6 +16,10 @@ services:
       - MAX_WORKERS=${MAX_WORKERS:-2}
       - PYTHONUNBUFFERED=1
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost}
+      - MAX_SESSIONS=${MAX_SESSIONS:-20}
+      - SESSION_TTL=${SESSION_TTL:-300}
+      - CLEANUP_INTERVAL=${CLEANUP_INTERVAL:-60}
+      - MAX_MEMORY_PERCENT=${MAX_MEMORY_PERCENT:-80}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/api/health"]
       interval: 30s
@@ -25,8 +29,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '1.5'
-          memory: '3g'
+          cpus: '${CPU_LIMIT:-1.0}'
+          memory: '${MEMORY_LIMIT:-2g}'
     logging:
       driver: "json-file"
       options:
@@ -51,15 +55,15 @@ services:
     depends_on:
       - backend
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:80/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:80/frontend-health"]
       interval: 30s
       timeout: 10s
       retries: 3
     deploy:
       resources:
         limits:
-          cpus: '0.5'
-          memory: '512m'
+          cpus: '${FRONTEND_CPU_LIMIT:-0.5}'
+          memory: '${FRONTEND_MEMORY_LIMIT:-512m}'
     logging:
       driver: "json-file"
       options:
