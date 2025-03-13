@@ -1,6 +1,6 @@
 // Set API URL based on environment or default to relative path for production
 const API_BASE = process.env.REACT_APP_API_URL || '';
-const API_ENDPOINT = `${API_BASE}/api`;
+const API_ENDPOINT = process.env.REACT_APP_API_ENDPOINT || '/api';
 
 export const UploadFile = async ({ file }) => {
   // Validate file size - 10MB limit
@@ -19,9 +19,9 @@ export const UploadFile = async ({ file }) => {
   try {
     console.log(`Uploading file to ${API_ENDPOINT}/detect_sets`);
     
-    // Add timeout for long-running requests
+    // Add timeout for long-running requests - match with backend timeout (120s)
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 60000); // 60-second timeout
+    const timeoutId = setTimeout(() => controller.abort(), 120000); // 120-second timeout to match Gunicorn
     
     const response = await fetch(`${API_ENDPOINT}/detect_sets`, {
       method: 'POST',
@@ -32,16 +32,21 @@ export const UploadFile = async ({ file }) => {
     // Clear the timeout
     clearTimeout(timeoutId);
 
+    // Better error handling to properly parse backend errors
     if (!response.ok) {
-      // Try to parse error response
-      let errorMessage;
       try {
         const errorData = await response.json();
-        errorMessage = errorData.error;
+        throw new Error(errorData.error || `Server error: ${response.status}`);
       } catch (e) {
-        errorMessage = `Server error: ${response.status}`;
+        if (e instanceof SyntaxError) {
+          // JSON parsing failed
+          if (response.status === 413) {
+            throw new Error('File size exceeds 10MB limit');
+          }
+          throw new Error(`Server error: ${response.status}`);
+        }
+        throw e;
       }
-      throw new Error(errorMessage);
     }
 
     return await response.json();
