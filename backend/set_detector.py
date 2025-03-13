@@ -65,6 +65,7 @@ except Exception as e:
     logger.warning(f"Failed to configure TensorFlow optimally: {e}")
 
 # Cached models with TTL to prevent memory leaks
+# Cached models with TTL to prevent memory leaks
 class ModelCache:
     def __init__(self, ttl=3600):  # 1-hour TTL by default
         self._cache = {}
@@ -108,7 +109,7 @@ class ModelCache:
             logger.info(f"Cleaned up {len(to_remove)} expired models from cache")
             gc.collect()
 
-# Create model cache
+# Create model cache as module-level variable to ensure sharing between workers
 _model_cache = ModelCache()
 
 def load_models():
