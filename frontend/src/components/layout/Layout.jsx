@@ -1,4 +1,6 @@
+
 import React from 'react';
+import { Link } from "react-router-dom";
 import { Github, BookOpen } from "lucide-react";
 
 export default function Layout({ children }) {
@@ -17,6 +19,8 @@ export default function Layout({ children }) {
         body {
           color: #333333;
           background-color: #FAFAFA;
+          -webkit-tap-highlight-color: transparent;
+          height: 100%;
         }
         .sf-pro-display {
           font-family: 'SF Pro Display', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
@@ -25,22 +29,6 @@ export default function Layout({ children }) {
         .sf-pro-text {
           font-family: 'SF Pro Text', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
           letter-spacing: -0.01em;
-        }
-        .btn-ios {
-          background-color: var(--set-primary);
-          border-radius: 16px;
-          font-weight: 500;
-          padding: 8px 16px;
-          box-shadow: 0 4px 10px rgba(151, 71, 255, 0.2);
-          transition: all 0.15s ease;
-        }
-        .btn-ios:hover {
-          transform: translateY(-1px);
-          filter: brightness(102%);
-          box-shadow: 0 6px 15px rgba(151, 71, 255, 0.25);
-        }
-        .btn-ios:active {
-          transform: translateY(0px);
         }
         .ios-bg {
           background: #FEFEFF;
@@ -51,7 +39,7 @@ export default function Layout({ children }) {
             radial-gradient(at 50% 80%, rgba(255, 92, 135, 0.07) 0px, transparent 35%);
         }
         .ios-card {
-          border-radius: 20px;
+          border-radius: 16px;
           box-shadow: 0 10px 25px rgba(0, 0, 0, 0.03), 0 1px 3px rgba(0, 0, 0, 0.01);
           border: none;
           backdrop-filter: blur(5px);
@@ -62,8 +50,8 @@ export default function Layout({ children }) {
         }
         .icon-button {
           border-radius: 100%;
-          width: 40px;
-          height: 40px;
+          width: 36px;
+          height: 36px;
           display: flex;
           align-items: center;
           justify-content: center;
@@ -78,24 +66,98 @@ export default function Layout({ children }) {
           transform: translateY(-1px);
           box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
         }
+        .icon-button:active {
+          transform: scale(0.96);
+        }
         .purple-button {
           background: linear-gradient(to bottom, #9F57FF, #8E47F5);
           color: white;
-          box-shadow: 0 6px 16px rgba(151, 71, 255, 0.25);
+          box-shadow: 0 8px 16px rgba(151, 71, 255, 0.25), 0 2px 4px rgba(151, 71, 255, 0.2);
           border-radius: 16px;
           border: none;
-          padding: 10px 18px;
+          padding: 12px 20px;
           font-weight: 500;
           transition: all 0.2s ease;
+          -webkit-tap-highlight-color: transparent;
         }
         .purple-button:hover {
           transform: translateY(-1px);
-          box-shadow: 0 8px 20px rgba(151, 71, 255, 0.3);
+          box-shadow: 0 10px 25px rgba(151, 71, 255, 0.3), 0 4px 6px rgba(151, 71, 255, 0.2);
+        }
+        .purple-button:active {
+          transform: scale(0.98);
+        }
+        
+        /* Mobile optimizations */
+        @media (max-width: 640px) {
+          .ios-card {
+            border-radius: 14px;
+          }
+          .purple-button {
+            width: 100%;
+            padding: 14px 20px;
+            font-size: 16px;
+          }
+        }
+        
+        /* Loading animations */
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.5; }
+        }
+        .pulse-animation {
+          animation: pulse 1.8s ease-in-out infinite;
+        }
+        
+        /* Image processing animation */
+        @keyframes processing {
+          0% { width: 10%; }
+          50% { width: 70%; }
+          100% { width: 100%; }
+        }
+        .processing-animation {
+          animation: processing 2.5s ease-in-out forwards;
+        }
+        
+        /* Bounce animation */
+        @keyframes bounce {
+          0%, 100% { transform: translateY(0); }
+          50% { transform: translateY(-5px); }
+        }
+        .bounce-animation {
+          animation: bounce 1.5s ease-in-out infinite;
+        }
+        
+        /* Processing animations */
+        @keyframes scan {
+          0% { transform: translateY(0); opacity: 0.3; }
+          50% { opacity: 0.7; }
+          100% { transform: translateY(100%); opacity: 0.3; }
+        }
+        
+        .scan-line {
+          background: linear-gradient(
+            to bottom,
+            transparent,
+            rgba(151, 71, 255, 0.2),
+            rgba(151, 71, 255, 0.4),
+            rgba(151, 71, 255, 0.2),
+            transparent
+          );
+          animation: scan 2s linear infinite;
+        }
+        
+        .processing-overlay {
+          background: radial-gradient(
+            circle at center,
+            rgba(151, 71, 255, 0.1),
+            transparent 70%
+          );
         }
       `}</style>
 
       <header className="border-b border-gray-100 bg-white/95 backdrop-blur-md sticky top-0 z-50">
-        <div className="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between">
+        <div className="max-w-6xl mx-auto px-4 h-12 md:h-14 flex items-center justify-between">
           <div className="flex items-center gap-2 sf-pro-display">
             <div className="flex gap-1">
               <div className="text-[#9747FF]">◇</div>
@@ -104,18 +166,18 @@ export default function Layout({ children }) {
             </div>
             <span className="font-medium text-gray-800 text-sm">SET Detector</span>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 md:gap-3">
             <a 
               href="https://www.setgame.com/sites/default/files/instructions/SET%20INSTRUCTIONS%20-%20ENGLISH.pdf"
               target="_blank"
               rel="noopener noreferrer"
-              className="flex items-center gap-1.5 text-gray-600 hover:text-gray-800 transition-colors text-sm px-3 py-1.5 rounded-full hover:bg-gray-50 sf-pro-text"
+              className="hidden sm:flex items-center gap-1.5 text-gray-600 hover:text-gray-800 transition-colors text-sm px-3 py-1.5 rounded-full hover:bg-gray-50 sf-pro-text"
             >
               <BookOpen className="w-3.5 h-3.5" />
               <span>SET Rules</span>
             </a>
             <a 
-              href="https://github.com/yourusername/set-detector"
+              href="https://github.com/omamitai/set-detector"
               target="_blank"
               rel="noopener noreferrer"
               className="icon-button"
@@ -130,19 +192,30 @@ export default function Layout({ children }) {
         {children}
       </main>
 
-      <footer className="border-t border-gray-100 bg-white/95 backdrop-blur-md py-3">
+      <footer className="bg-white/95 backdrop-blur-md border-t border-gray-100 py-3 pb-safe">
         <div className="max-w-6xl mx-auto px-4 text-xs text-gray-500 sf-pro-text">
-          <div className="flex justify-between items-center">
-            <p>SET Game Detector • Open Source</p>
-            <div className="flex items-center gap-3">
+          <div className="flex flex-col md:flex-row justify-between items-center gap-3">
+            <div className="flex items-center gap-3 justify-center">
+              <span>© 2025 Oamitai</span>
               <a 
-                href="https://github.com/yourusername/set-detector"
+                href="https://github.com/omamitai/set-detector"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-gray-500 hover:text-gray-800 transition-colors"
               >
-                View on GitHub
+                GitHub
               </a>
+              <a 
+                href="https://www.setgame.com/sites/default/files/instructions/SET%20INSTRUCTIONS%20-%20ENGLISH.pdf"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-gray-500 hover:text-gray-800 transition-colors"
+              >
+                Game Rules
+              </a>
+            </div>
+            <div className="text-[10px] text-gray-400 text-center">
+              SET® is a registered trademark of Marsha J. Falco and SET Enterprises. Unofficial project.
             </div>
           </div>
         </div>
