@@ -1,14 +1,16 @@
-
 import React, { useState, useRef } from 'react';
-import { Camera, X, Upload } from "lucide-react";
+import { Camera, X, Upload, AlertTriangle } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import { UPLOAD_CONFIG } from '@/config/UploadConfig';
 
-export default function ImageUploader({ onUpload, isUploading }) {
+export default function ImageUploader({ onUpload, isUploading, disabled = false }) {
   const [dragActive, setDragActive] = useState(false);
   const [preview, setPreview] = useState(null);
   const fileInputRef = useRef(null);
 
   const handleDrag = (e) => {
+    if (disabled || isUploading) return;
+    
     e.preventDefault();
     e.stopPropagation();
     if (e.type === "dragenter" || e.type === "dragover") {
@@ -19,6 +21,8 @@ export default function ImageUploader({ onUpload, isUploading }) {
   };
 
   const handleDrop = async (e) => {
+    if (disabled || isUploading) return;
+    
     e.preventDefault();
     e.stopPropagation();
     setDragActive(false);
@@ -31,6 +35,8 @@ export default function ImageUploader({ onUpload, isUploading }) {
   };
 
   const handleChange = async (e) => {
+    if (disabled || isUploading) return;
+    
     const file = e.target.files[0];
     if (file) {
       setPreview(URL.createObjectURL(file));
@@ -39,10 +45,12 @@ export default function ImageUploader({ onUpload, isUploading }) {
   };
 
   const clearPreview = () => {
+    if (isUploading) return;
     setPreview(null);
   };
 
   const handleUpload = () => {
+    if (disabled || isUploading) return;
     fileInputRef.current?.click();
   };
 
@@ -52,6 +60,7 @@ export default function ImageUploader({ onUpload, isUploading }) {
         className={`
           ios-card transition-all overflow-hidden
           ${dragActive ? 'ring-2 ring-purple-300' : ''}
+          ${disabled ? 'opacity-75 pointer-events-none' : ''}
         `}
         onDragEnter={handleDrag}
         onDragLeave={handleDrag}
@@ -94,24 +103,37 @@ export default function ImageUploader({ onUpload, isUploading }) {
                 accept="image/*"
                 className="hidden"
                 id="file-upload"
+                disabled={disabled || isUploading}
               />
               
-              <div className="w-full sm:w-auto px-4 sm:px-0">
-                <button
-                  onClick={handleUpload}
-                  className="purple-button w-full flex items-center justify-center gap-2"
-                >
-                  <Camera className="w-5 h-5" />
-                  <span>Upload or Take Photo</span>
-                </button>
-              </div>
-              
-              <div className="mt-6 px-4 w-full">
-                <div className="flex items-center justify-center gap-1.5 text-xs text-gray-500 sf-pro-text">
-                  <Upload className="w-3 h-3" />
-                  <span>Drag and drop image here</span>
+              {disabled ? (
+                <div className="w-full sm:w-auto px-4 sm:px-0 mb-3">
+                  <div className="bg-gray-200 text-gray-500 w-full py-3 px-5 rounded-xl flex items-center justify-center gap-2">
+                    <AlertTriangle className="w-5 h-5" />
+                    <span>Server Unavailable</span>
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <div className="w-full sm:w-auto px-4 sm:px-0">
+                  <button
+                    onClick={handleUpload}
+                    className="purple-button w-full flex items-center justify-center gap-2"
+                    disabled={disabled || isUploading}
+                  >
+                    <Camera className="w-5 h-5" />
+                    <span>Upload or Take Photo</span>
+                  </button>
+                </div>
+              )}
+              
+              {!disabled && (
+                <div className="mt-6 px-4 w-full">
+                  <div className="flex items-center justify-center gap-1.5 text-xs text-gray-500 sf-pro-text">
+                    <Upload className="w-3 h-3" />
+                    <span>Drag and drop image here</span>
+                  </div>
+                </div>
+              )}
             </motion.div>
           ) : (
             <motion.div
@@ -197,6 +219,17 @@ export default function ImageUploader({ onUpload, isUploading }) {
           )}
         </AnimatePresence>
       </div>
+      
+      {!disabled && !isUploading && !preview && (
+        <div className="mt-4 text-xs text-gray-500 sf-pro-text">
+          <h4 className="font-medium mb-2">For best results:</h4>
+          <ul className="list-disc pl-5 space-y-1">
+            {UPLOAD_CONFIG.uploadInstructions.map((instruction, i) => (
+              <li key={i}>{instruction}</li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }
