@@ -4,20 +4,37 @@ import ImageUploader from '../components/upload/ImageUploader';
 import ResultsView from '../components/results/ResultsView';
 import HowItWorks from '../components/home/HowItWorks';
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { AlertCircle, WifiOff } from "lucide-react";
+import { AlertCircle, WifiOff, RefreshCw } from "lucide-react";
 import { GameSession } from '../entities/GameSession';
 
 export default function Home() {
   const [isUploading, setIsUploading] = useState(false);
   const [error, setError] = useState(null);
   const [session, setSession] = useState(null);
-  const [backendStatus, setBackendStatus] = useState({ healthy: true });
+  const [backendStatus, setBackendStatus] = useState({ 
+    healthy: true, 
+    checking: false 
+  });
 
   // Check backend health on component mount
   useEffect(() => {
     const checkHealth = async () => {
-      const status = await checkApiHealth();
-      setBackendStatus(status);
+      setBackendStatus(prev => ({ ...prev, checking: true }));
+      try {
+        const status = await checkApiHealth();
+        setBackendStatus({ 
+          ...status, 
+          checking: false, 
+          lastChecked: new Date() 
+        });
+      } catch (err) {
+        setBackendStatus({ 
+          healthy: false, 
+          checking: false,
+          lastChecked: new Date(),
+          error: err.message
+        });
+      }
     };
     
     checkHealth();
@@ -28,15 +45,39 @@ export default function Home() {
     return () => clearInterval(interval);
   }, []);
 
+  // Function to retry connection
+  const handleRetryConnection = async () => {
+    setBackendStatus(prev => ({ ...prev, checking: true }));
+    try {
+      const status = await checkApiHealth();
+      setBackendStatus({ 
+        ...status, 
+        checking: false, 
+        lastChecked: new Date() 
+      });
+    } catch (err) {
+      setBackendStatus({ 
+        healthy: false, 
+        checking: false,
+        lastChecked: new Date(),
+        error: err.message
+      });
+    }
+  };
+
   const handleUpload = async (file) => {
     setIsUploading(true);
     setError(null);
     
     // Check backend health before attempting upload
     if (!backendStatus.healthy) {
-      setError("The server is currently unavailable. Please try again later.");
-      setIsUploading(false);
-      return;
+      await handleRetryConnection();
+      
+      if (!backendStatus.healthy) {
+        setError("The server is currently unavailable. Please try again later.");
+        setIsUploading(false);
+        return;
+      }
     }
     
     try {
@@ -48,20 +89,25 @@ export default function Home() {
         throw new Error('Invalid response from server');
       }
       
-      // Check if sets were found
-      if (response.detected_sets && response.detected_sets.length === 0) {
-        // Not treating this as an error, but could show a specific message
-        console.log('No sets found in the image');
-      }
-      
       // Create a proper session object
       const newSession = await GameSession.create({
         session_id: response.session_id,
         original_image_url: response.original_image_url,
         processed_image_url: response.processed_image_url,
-        detected_sets: response.detected_sets,
+        detected_sets: response.detected_sets || [],
         status: 'completed'
       });
+      
+      // Preload images for better user experience
+      if (newSession.original_image_url) {
+        const img1 = new Image();
+        img1.src = newSession.original_image_url;
+      }
+      
+      if (newSession.processed_image_url) {
+        const img2 = new Image();
+        img2.src = newSession.processed_image_url;
+      }
       
       setSession(newSession);
     } catch (err) {
@@ -74,6 +120,12 @@ export default function Home() {
         setError("Your image exceeds the 10MB size limit. Please resize it and try again.");
       } else if (err.message.includes('type') || err.message.includes('supported')) {
         setError("Only JPEG and PNG images are supported. Please select a valid image.");
+      } else if (err.message.includes('Network') || err.message.includes('fetch')) {
+        setError("Network error. Please check your connection and try again.");
+        // Also update backend status
+        setBackendStatus(prev => ({ ...prev, healthy: false }));
+      } else if (err.message.includes('busy')) {
+        setError("The server is currently busy. Please try again in a few minutes.");
       } else {
         setError(err.message || "We couldn't process your image. Please try again with a clearer photo.");
       }
@@ -100,8 +152,16 @@ export default function Home() {
         {!backendStatus.healthy && (
           <Alert variant="destructive" className="mb-6 max-w-md mx-auto rounded-xl bg-amber-50 border-amber-100 text-amber-800">
             <WifiOff className="h-4 w-4" />
-            <AlertDescription className="sf-pro-text">
-              Server connection issues detected. Some features may be unavailable.
+            <AlertDescription className="sf-pro-text flex items-center justify-between">
+              <span>Server connection issues detected. Some features may be unavailable.</span>
+              <button 
+                onClick={handleRetryConnection}
+                className="flex items-center text-amber-700 hover:text-amber-900 bg-amber-100 hover:bg-amber-200 px-2 py-1 rounded-md text-xs transition-colors"
+                disabled={backendStatus.checking}
+              >
+                <RefreshCw className={`h-3 w-3 mr-1 ${backendStatus.checking ? 'animate-spin' : ''}`} />
+                Retry
+              </button>
             </AlertDescription>
           </Alert>
         )}
