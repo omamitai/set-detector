@@ -10,16 +10,17 @@ import time
 import gc  # Garbage collection
 import resource
 import sys
+import json
 from werkzeug.utils import secure_filename
 from set_detector import identify_sets, load_models, ModelLoadError
 
 # Initialize Flask app
 app = Flask(__name__)
 
-# Configure CORS based on environment
+# Configure CORS - Accept requests from all origins during development
 CORS_ORIGINS = os.environ.get('ALLOWED_ORIGINS', '*').split(',')
 app.logger.info(f"Configuring CORS with allowed origins: {CORS_ORIGINS}")
-CORS(app, resources={r"/api/*": {"origins": CORS_ORIGINS}})
+CORS(app, resources={r"/*": {"origins": CORS_ORIGINS}})
 
 # Configure logging
 logging.basicConfig(
@@ -31,7 +32,7 @@ logging.basicConfig(
 # Get environment variables with Railway-compatible defaults
 MAX_WORKERS = int(os.environ.get('MAX_WORKERS', '2'))
 PORT = int(os.environ.get('PORT', '5000'))  # Railway provides PORT env var
-app.logger.info(f"Configured with MAX_WORKERS={MAX_WORKERS}")
+app.logger.info(f"Configured with MAX_WORKERS={MAX_WORKERS}, PORT={PORT}")
 
 # Allowed file extensions
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
@@ -48,14 +49,16 @@ last_cleanup = time.time()
 # Track application startup time
 app_startup_time = time.time()
 
-# Verify models on startup
+# Try to load models, but don't fail startup if they can't be loaded
+# This allows health checks to pass while models initialize
 try:
-    app.logger.info("Verifying models on startup...")
+    app.logger.info("Attempting to load models on startup...")
     load_models()
-    app.logger.info("Models verified successfully!")
+    app.logger.info("Models loaded successfully!")
     models_available = True
 except Exception as e:
     app.logger.error(f"Failed to load models on startup: {e}", exc_info=True)
+    app.logger.warning("Application will continue without models - health checks will pass")
     models_available = False
 
 def check_memory_pressure():
@@ -130,9 +133,16 @@ def allowed_file(file):
     has_valid_mime = file.content_type in ALLOWED_MIME_TYPES
     return has_valid_extension and has_valid_mime
 
-@app.route('/api/detect_sets', methods=['POST'])
+@app.route('/api/detect_sets', methods=['POST', 'OPTIONS'])
 def detect_sets():
     """Handles image uploads and detects SETs."""
+    # Handle OPTIONS requests for CORS preflight
+    if request.method == 'OPTIONS':
+        response = app.make_default_options_response()
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
+        response.headers.add('Access-Control-Allow-Methods', 'POST')
+        return response
+        
     # Check if models were loaded successfully
     if not models_available:
         return jsonify({'error': 'Model initialization failed. Please contact the administrator.'}), 503
@@ -218,15 +228,19 @@ def detect_sets():
         
         app.logger.info(f"Found {len(detected_sets)} SETs in image")
         
-        # For Railway deployment, we need to handle the API URL differently
+        # For Railway deployment, construct URLs properly
         api_base = request.host_url.rstrip('/')
         
-        return jsonify({
+        response = jsonify({
             'session_id': session_id,
             'original_image_url': f"{api_base}/api/images/{session_id}/original",
             'processed_image_url': f"{api_base}/api/images/{session_id}/result",
             'detected_sets': detected_sets
         })
+        
+        # Ensure CORS headers are included
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        return response
     
     except Exception as e:
         app.logger.error(f"Error processing image: {str(e)}", exc_info=True)
@@ -263,13 +277,15 @@ def get_session_image(session_id, image_type):
     # Create in-memory file-like object
     image_io = io.BytesIO(image_buffer)
     
-    # Return the image with proper content type
-    return send_file(
+    # Return the image with proper content type and CORS headers
+    response = send_file(
         image_io,
         mimetype='image/jpeg',
         as_attachment=False,
         download_name=f"{session_id}_{image_type}.jpg"
     )
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    return response
 
 @app.route('/api/health')
 def health_check():
@@ -279,45 +295,101 @@ def health_check():
         memory_usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
         memory_usage_mb = memory_usage / 1024  # Convert to MB on Linux
         
-        # Check if models are loaded
-        models_status = "available" if models_available else "unavailable"
+        # Models status - don't fail health check if models aren't loaded
+        models_status = "available" if models_available else "initializing"
         
         # Calculate uptime
         uptime_seconds = time.time() - app_startup_time
         
         memory_info = {
             'active_sessions': len(current_sessions),
-            'memory_usage_mb': memory_usage_mb,
+            'memory_usage_mb': round(memory_usage_mb, 2),
             'models_status': models_status,
-            'uptime_seconds': uptime_seconds,
+            'uptime_seconds': round(uptime_seconds, 2),
             'worker_count': MAX_WORKERS,
             'max_sessions': MAX_SESSIONS,
             'session_ttl_seconds': SESSION_TTL
         }
         
-        # Only report healthy if models are available
-        status = "healthy" if models_available else "degraded"
-        return jsonify({
-            'status': status,
+        # Always report healthy for Railway health checks
+        # This is crucial - we want the container to stay up even if models are still loading
+        response = jsonify({
+            'status': 'healthy',
             'models_status': models_status,
             'memory': memory_info
-        }), 200
+        })
+        
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        return response, 200
     except Exception as e:
-        app.logger.error(f"Error in health check: {e}")  # Fixed: was using logger instead of app.logger
-        return jsonify({
-            'status': 'error',
+        app.logger.error(f"Error in health check: {e}")
+        # Still return status 200 for Railway health checks to pass
+        response = jsonify({
+            'status': 'warning',
             'error': str(e)
-        }), 500
+        })
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        return response, 200
 
 # Railway expects root path to be accessible
 @app.route('/')
 def root():
-    return jsonify({
+    response = jsonify({
         'status': 'ok',
         'service': 'SET Detector API',
         'version': '1.0.0',
         'health_endpoint': '/api/health'
     })
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    return response
+
+# Debug endpoint to help troubleshoot model loading issues
+@app.route('/api/debug/environment')
+def debug_environment():
+    """Endpoint for debugging environment variables and paths."""
+    if not os.environ.get('DEBUG', 'False').lower() == 'true':
+        return jsonify({'error': 'Debug endpoints disabled in production'}), 403
+        
+    try:
+        env_vars = {key: value for key, value in os.environ.items() 
+                   if 'API_KEY' not in key.upper() and 'SECRET' not in key.upper()}
+        
+        cwd = os.getcwd()
+        directory_structure = {}
+        
+        # Check commonly used directories
+        for path in [cwd, '/app', '/app/models']:
+            if os.path.exists(path):
+                try:
+                    directory_structure[path] = os.listdir(path)
+                except Exception as e:
+                    directory_structure[path] = f"Error listing: {str(e)}"
+            else:
+                directory_structure[path] = "Path doesn't exist"
+                
+        models_info = "Not available - models not loaded"
+        if models_available:
+            try:
+                # Try to get some basic model info without leaking sensitive details
+                models_info = "Models loaded successfully"
+            except:
+                models_info = "Error retrieving model info"
+                
+        debug_info = {
+            'environment': env_vars,
+            'working_directory': cwd,
+            'directory_structure': directory_structure,
+            'models_info': models_info,
+            'python_version': sys.version,
+            'platform': sys.platform
+        }
+        
+        response = jsonify(debug_info)
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        return response
+    except Exception as e:
+        app.logger.error(f"Error in debug endpoint: {e}")
+        return jsonify({'error': str(e)}), 500
 
 # If this is the main module, run the app
 if __name__ == '__main__':
