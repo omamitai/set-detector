@@ -303,12 +303,11 @@ def health_check():
             'memory': memory_info
         }), 200
     except Exception as e:
-        logger.error(f"Error in health check: {e}")
+        app.logger.error(f"Error in health check: {e}")  # Fixed: was using logger instead of app.logger
         return jsonify({
             'status': 'error',
             'error': str(e)
         }), 500
-
 
 # Railway expects root path to be accessible
 @app.route('/')
