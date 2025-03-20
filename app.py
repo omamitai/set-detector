@@ -71,8 +71,8 @@ def check_memory_pressure():
             
         app.logger.debug(f"Memory usage: {mem_usage_mb:.2f}MB")
         
-        # Railway has memory limits, so we'll use a simpler approach
-        return mem_usage_mb > 1536  # 1.5GB threshold
+        # Railway has memory limits of 2GB by default in standard tier
+        return mem_usage_mb > (int(os.environ.get('MEMORY_LIMIT_MB', '1536')))
             
     except Exception as e:
         app.logger.warning(f"Error checking memory pressure: {e}")
