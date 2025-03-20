@@ -23,9 +23,12 @@ RUN mkdir -p models/Card/16042024 \
     models/Characteristics/11022025 \
     models/Shape/15052024
 
-# Copy application code
-COPY app.py set_detector.py ./
+# Copy application code and startup script
+COPY app.py set_detector.py start.sh ./
 COPY .env* ./
+
+# Make the startup script executable
+RUN chmod +x ./start.sh
 
 # Copy models (in separate steps for better caching)
 COPY models/Card/16042024/*.pt models/Card/16042024/
@@ -47,8 +50,9 @@ ENV MAX_WORKERS=2 \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
-# Railway will set the PORT environment variable
-EXPOSE ${PORT:-5000}
+# Set a default port (will be overridden by Railway)
+ENV PORT=5000
+EXPOSE 5000
 
-# Use a proper startup script to handle the PORT environment variable
-CMD gunicorn --workers=${MAX_WORKERS} --timeout=120 --bind 0.0.0.0:${PORT:-5000} app:app
+# Use the startup script as the entry point
+CMD ["./start.sh"]
