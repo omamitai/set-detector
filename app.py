@@ -16,21 +16,10 @@ from set_detector import identify_sets, load_models, ModelLoadError
 # Initialize Flask app
 app = Flask(__name__)
 
-# More secure CORS configuration
-if os.environ.get('FLASK_ENV') == 'production':
-    # In production, ALLOWED_ORIGINS must be explicitly configured
-    allowed_origins = os.environ.get('ALLOWED_ORIGINS')
-    if not allowed_origins:
-        app.logger.error("ALLOWED_ORIGINS environment variable not set in production! Refusing to start with insecure settings.")
-        # Instead of using '*', we'll default to rejecting all origins for security
-        allowed_origins = []
-    else:
-        allowed_origins = allowed_origins.split(',')
-    app.logger.info(f"Configuring CORS with allowed origins: {allowed_origins}")
-    CORS(app, resources={r"/api/*": {"origins": allowed_origins}})
-else:
-    # In development, allow all origins
-    CORS(app)
+# Configure CORS based on environment
+CORS_ORIGINS = os.environ.get('ALLOWED_ORIGINS', '*').split(',')
+app.logger.info(f"Configuring CORS with allowed origins: {CORS_ORIGINS}")
+CORS(app, resources={r"/api/*": {"origins": CORS_ORIGINS}})
 
 # Configure logging
 logging.basicConfig(
@@ -39,8 +28,9 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()]
 )
 
-# Get environment variables with better defaults
+# Get environment variables with Railway-compatible defaults
 MAX_WORKERS = int(os.environ.get('MAX_WORKERS', '2'))
+PORT = int(os.environ.get('PORT', '5000'))  # Railway provides PORT env var
 app.logger.info(f"Configured with MAX_WORKERS={MAX_WORKERS}")
 
 # Allowed file extensions
@@ -79,37 +69,15 @@ def check_memory_pressure():
         else:  # Linux and others
             mem_usage_mb = mem_info / 1024
             
-        # Get total memory - with fallback mechanism
-        total_mem_mb = None
-        mem_percent = None
+        app.logger.debug(f"Memory usage: {mem_usage_mb:.2f}MB")
         
-        # Try /proc/meminfo first (Linux)
-        try:
-            with open('/proc/meminfo', 'r') as f:
-                for line in f:
-                    if 'MemTotal' in line:
-                        total_mem_kb = int(line.split()[1])
-                        total_mem_mb = total_mem_kb / 1024
-                        mem_percent = (mem_usage_mb / total_mem_mb) * 100
-                        app.logger.debug(f"Memory usage: {mem_usage_mb:.2f}MB ({mem_percent:.1f}%)")
-        except (FileNotFoundError, IOError):
-            # Fallback to a fixed threshold if we can't determine system memory
-            app.logger.debug(f"Cannot determine total memory. Using memory usage threshold: {mem_usage_mb:.2f}MB")
-            # Assume we're under pressure if using more than 1.5GB
-            return mem_usage_mb > 1536
-            
-        if mem_percent is not None:
-            return mem_percent > MAX_MEMORY_PERCENT
-        else:
-            # Second fallback - use absolute threshold
-            return mem_usage_mb > 1536
+        # Railway has memory limits, so we'll use a simpler approach
+        return mem_usage_mb > 1536  # 1.5GB threshold
             
     except Exception as e:
         app.logger.warning(f"Error checking memory pressure: {e}")
         # Default to False to prevent unnecessary cleanup
         return False
-        
-    return False
 
 def cleanup_old_sessions(force=False):
     """Remove session data older than TTL or when memory limits are approached"""
@@ -250,10 +218,13 @@ def detect_sets():
         
         app.logger.info(f"Found {len(detected_sets)} SETs in image")
         
+        # For Railway deployment, we need to handle the API URL differently
+        api_base = request.host_url.rstrip('/')
+        
         return jsonify({
             'session_id': session_id,
-            'original_image_url': f"/api/images/{session_id}/original",
-            'processed_image_url': f"/api/images/{session_id}/result",
+            'original_image_url': f"{api_base}/api/images/{session_id}/original",
+            'processed_image_url': f"{api_base}/api/images/{session_id}/result",
             'detected_sets': detected_sets
         })
     
@@ -338,22 +309,16 @@ def health_check():
             'error': str(e)
         }), 200  # Still return 200 but with degraded status
 
-# Add startup health check route
-@app.route('/api/startup_check')
-def startup_check():
-    """Check if the application is ready to serve requests."""
-    if not models_available:
-        # Try to load models again
-        try:
-            load_models()
-            global models_available
-            models_available = True
-            app.logger.info("Models loaded successfully after retry!")
-        except Exception as e:
-            app.logger.error(f"Models still not available after retry: {e}")
-            
+# Railway expects root path to be accessible
+@app.route('/')
+def root():
     return jsonify({
-        'status': 'ready' if models_available else 'not_ready',
-        'uptime_seconds': time.time() - app_startup_time,
-        'models_available': models_available
-    }), 200 if models_available else 503
+        'status': 'ok',
+        'service': 'SET Detector API',
+        'version': '1.0.0',
+        'health_endpoint': '/api/health'
+    })
+
+# If this is the main module, run the app
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=PORT, debug=False)
