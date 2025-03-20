@@ -50,4 +50,4 @@ ENV MAX_WORKERS=2 \
     MAX_MEMORY_PERCENT=80
 
 # Command to run the application
-CMD ["sh", "-c", "gunicorn --workers=${MAX_WORKERS:-2} --timeout=120 --bind 0.0.0.0:${PORT:-5000} app:app"]
+CMD gunicorn --workers=${MAX_WORKERS} --timeout=120 --bind 0.0.0.0:${PORT} app:app
