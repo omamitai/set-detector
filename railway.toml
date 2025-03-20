@@ -3,7 +3,6 @@ builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-startCommand = "gunicorn --workers=$MAX_WORKERS --timeout=180 --bind 0.0.0.0:$PORT app:app"
 healthcheckPath = "/api/health"
 healthcheckTimeout = 600
 healthcheckInterval = 30
@@ -12,9 +11,9 @@ restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3
 
 [env]
-MAX_WORKERS = "2"
-MAX_SESSIONS = "20"
-SESSION_TTL = "300"
-CLEANUP_INTERVAL = "60"
-MAX_MEMORY_PERCENT = "80"
+MAX_WORKERS = "3"
+MAX_SESSIONS = "30"
+SESSION_TTL = "600"
+CLEANUP_INTERVAL = "120"
+MAX_MEMORY_PERCENT = "85"
 MODELS_DIR = "/app/models"
