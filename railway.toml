@@ -3,8 +3,7 @@ builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-# This is for the Flask app
-startCommand = "gunicorn --workers=3 --timeout=120 --bind 0.0.0.0:$PORT app:app"
+# Remove startCommand to let the Dockerfile CMD run properly
 healthcheckPath = "/api/health"
 healthcheckTimeout = 60
 healthcheckInterval = 15
