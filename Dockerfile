@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y \
 
 # Copy requirements and install Python dependencies
 COPY requirements.txt .
+# Use --no-cache-dir to reduce image size and pip install with strict requirements
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Create directory for logs with proper permissions
@@ -48,7 +49,10 @@ ENV MAX_WORKERS=2 \
     MAX_MEMORY_PERCENT=80 \
     MODELS_DIR=/app/models \
     PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    # TF settings to avoid OOM errors
+    TF_CPP_MIN_LOG_LEVEL=2 \
+    TF_FORCE_GPU_ALLOW_GROWTH=true
 
 # Set a default port (will be overridden by Railway)
 ENV PORT=5000
