@@ -144,6 +144,7 @@ def debug_file_structure():
     except Exception as e:
         logger.error(f"Error in debug_file_structure: {e}")
 
+
 def load_models():
     """Load models with improved path resolution for Railway deployment."""
     # Check cache first
@@ -159,26 +160,43 @@ def load_models():
     
     logger.info("Loading models from disk")
     
+    # Get current working directory and debug environment
+    cwd = os.getcwd()
+    logger.info(f"Current working directory: {cwd}")
+    logger.info(f"Directory contents: {os.listdir(cwd)}")
+    
+    # Try to read MODELS_DIR from environment
+    models_dir_env = os.environ.get('MODELS_DIR')
+    logger.info(f"MODELS_DIR environment variable: {models_dir_env}")
+    
     # Define base paths with Railway-friendly path resolution
-    # For Railway, models should be in the repository root
     app_root = Path(os.path.dirname(os.path.abspath(__file__)))
+    logger.info(f"App root directory: {app_root}")
     
     # Try multiple potential locations for flexibility
     possible_locations = [
-        app_root / "models",               # Check ./models/ directory (preferred)
-        app_root,                          # Check app root directory
-        Path(os.environ.get('MODELS_DIR', ''))  # Check custom env var if set
+        Path(cwd) / "models",                # Check models in current working directory (Railway)
+        app_root / "models",                 # Check ./models/ directory (preferred)
+        app_root,                            # Check app root directory
+        Path(models_dir_env) if models_dir_env else Path(".")  # Check custom env var if set
     ]
     
     # Debug: Log all potential paths we're checking
-    for loc in possible_locations:
-        logger.info(f"Checking for models in: {loc}")
-        if loc.exists():
-            logger.info(f"Directory exists: {loc}")
-            try:
-                logger.info(f"Contents: {list(loc.glob('*'))}")
-            except Exception as e:
-                logger.info(f"Could not list contents: {e}")
+    for idx, loc in enumerate(possible_locations):
+        logger.info(f"Checking location {idx+1} for models: {loc}")
+        try:
+            if loc.exists():
+                logger.info(f"Directory exists. Contents: {list(loc.glob('*'))}")
+                # Check deeper for subdirectories
+                for subdir in ['Card', 'Characteristics', 'Shape']:
+                    subpath = loc / subdir
+                    if subpath.exists():
+                        logger.info(f"Found {subdir} directory at {subpath}")
+                        logger.info(f"Contents: {list(subpath.glob('*'))}")
+            else:
+                logger.info(f"Directory does not exist: {loc}")
+        except Exception as e:
+            logger.warning(f"Error checking path {loc}: {str(e)}")
     
     # Find the first valid path that contains the expected model directories
     base_dir = None
@@ -195,22 +213,36 @@ def load_models():
             break
     
     if base_dir is None:
-        # Log paths for debugging
-        logger.error(f"Current directory: {os.getcwd()}")
-        logger.error(f"Directory contents: {os.listdir(os.getcwd())}")
-        error_msg = "Model directories not found in any expected location"
-        logger.error(error_msg)
-        raise ModelLoadError(error_msg)
+        # Last fallback - check if we have nested models directory
+        models_nested = Path(cwd) / "models" / "models"
+        if models_nested.exists() and any([(models_nested / subdir).exists() for subdir in ['Card', 'Characteristics', 'Shape']]):
+            base_dir = models_nested
+            logger.info(f"Found models in nested directory: {base_dir}")
+        else:
+            # Log paths for debugging
+            error_msg = "Model directories not found in any expected location"
+            logger.error(error_msg)
+            try:
+                # Try to show file tree for debugging
+                import subprocess
+                result = subprocess.run(["find", cwd, "-type", "f", "-name", "*.pt", "-o", "-name", "*.keras"], 
+                                       capture_output=True, text=True)
+                logger.error(f"File search results: {result.stdout}")
+            except Exception as e:
+                logger.error(f"Error during file search: {e}")
+            raise ModelLoadError(error_msg)
     
     # Define the specific model paths
     char_path = base_dir / "Characteristics" / "11022025"
     shape_path = base_dir / "Shape" / "15052024" 
     card_path = base_dir / "Card" / "16042024"
     
+    logger.info(f"Using model paths: Characteristics={char_path}, Shape={shape_path}, Card={card_path}")
+    
     # Verify each path exists
     for path, name in [(char_path, 'Characteristics'), 
-                       (shape_path, 'Shape'), 
-                       (card_path, 'Card')]:
+                     (shape_path, 'Shape'), 
+                     (card_path, 'Card')]:
         if not path.exists():
             error_msg = f"Model directory {name} not found at {path}"
             logger.error(error_msg)
@@ -225,9 +257,14 @@ def load_models():
         
         # Check that each file exists
         missing_files = []
-        for path in [shape_model_path, fill_model_path, detector_shape_path, detector_card_path]:
+        for path, name in [
+            (shape_model_path, "shape_model.keras"),
+            (fill_model_path, "fill_model.keras"),
+            (detector_shape_path, "best.pt (Shape)"),
+            (detector_card_path, "best.pt (Card)")
+        ]:
             if not os.path.exists(path):
-                missing_files.append(path)
+                missing_files.append(f"{name} at {path}")
         
         if missing_files:
             error_msg = f"Missing model files: {', '.join(missing_files)}"
@@ -239,13 +276,17 @@ def load_models():
         logger.info("Loading shape classification model...")
         model_shape = load_model(shape_model_path)
         _model_cache.set('shape_model', model_shape)
+        logger.info(f"Shape model loaded successfully in {time.time() - start_time:.2f} seconds")
         
         logger.info("Loading fill classification model...")
+        start_time = time.time()
         model_fill = load_model(fill_model_path)
         _model_cache.set('fill_model', model_fill)
+        logger.info(f"Fill model loaded successfully in {time.time() - start_time:.2f} seconds")
         
         # Load YOLO models, CPU only - Important for Railway
         logger.info("Loading shape detection model...")
+        start_time = time.time()
         detector_shape = YOLO(detector_shape_path)
         detector_shape.conf = 0.5  # Match Colab example confidence threshold
         detector_shape.iou = 0.5   
@@ -259,8 +300,10 @@ def load_models():
         
         detector_shape.to("cpu")  # Ensure CPU usage for Railway compatibility
         _model_cache.set('detector_shape', detector_shape)
+        logger.info(f"Shape detection model loaded successfully in {time.time() - start_time:.2f} seconds")
         
         logger.info("Loading card detection model...")
+        start_time = time.time()
         detector_card = YOLO(detector_card_path)
         detector_card.conf = 0.5  # Match Colab example confidence threshold
         detector_card.iou = 0.5
@@ -274,8 +317,9 @@ def load_models():
             
         detector_card.to("cpu")  # Ensure CPU usage for Railway compatibility
         _model_cache.set('detector_card', detector_card)
+        logger.info(f"Card detection model loaded successfully in {time.time() - start_time:.2f} seconds")
         
-        logger.info(f"All models loaded successfully in {time.time() - start_time:.2f} seconds")
+        logger.info(f"All models loaded successfully")
         return model_shape, model_fill, detector_card, detector_shape
     
     except ModelLoadError:
@@ -283,6 +327,7 @@ def load_models():
     except Exception as e:
         logger.error(f"Failed to load models: {str(e)}", exc_info=True)
         raise ModelLoadError(f"Failed to load models: {str(e)}")
+
 
 def correct_orientation(board_image, card_detector):
     """Rotate image if cards are vertical, with optimized processing."""
