@@ -3,10 +3,13 @@ builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 
 [deploy]
+# This is for the Flask app
+startCommand = "gunicorn --workers=3 --timeout=120 --bind 0.0.0.0:$PORT app:app"
 healthcheckPath = "/api/health"
-healthcheckTimeout = 600
-healthcheckInterval = 30
-healthcheckStartPeriod = 300
+healthcheckTimeout = 60
+healthcheckInterval = 15
+# Allow more startup time for model loading
+healthcheckStartPeriod = 180
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3
 
@@ -17,3 +20,4 @@ SESSION_TTL = "600"
 CLEANUP_INTERVAL = "120"
 MAX_MEMORY_PERCENT = "85"
 MODELS_DIR = "/app/models"
+ALLOWED_ORIGINS = "*"
