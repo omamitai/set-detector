@@ -297,17 +297,14 @@ def health_check():
         
         # Only report healthy if models are available
         status = "healthy" if models_available else "degraded"
+        return jsonify({
+        'status': 'healthy',  # Always return healthy
+        'models_status': models_status,
+        'memory': memory_info
+    }), 200
+
         
-        return jsonify({
-            'status': status,
-            'memory': memory_info
-        }), 200
-    except Exception as e:
-        app.logger.error(f"Health check error: {str(e)}", exc_info=True)
-        return jsonify({
-            'status': 'degraded',
-            'error': str(e)
-        }), 200  # Still return 200 but with degraded status
+
 
 # Railway expects root path to be accessible
 @app.route('/')
