@@ -298,7 +298,7 @@ def health_check():
         # Only report healthy if models are available
         status = "healthy" if models_available else "degraded"
         return jsonify({
-        'status': 'healthy',  # Always return healthy
+        'status': status,  # Always return healthy
         'models_status': models_status,
         'memory': memory_info
     }), 200
