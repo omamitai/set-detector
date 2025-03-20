@@ -150,9 +150,9 @@ def debug_file_structure():
 
 def load_models():
     """
-    Load ML models with improved path resolution for Railway deployment.
+    Load ML models with improved path resolution and compatibility handling.
     
-    Enhanced with multiple fallback paths and better error handling.
+    This version includes TensorFlow compatibility fixes and better error handling.
     """
     # Check cache first
     models = (
@@ -191,23 +191,6 @@ def load_models():
         Path("/app/models"),              # Docker default location
         Path(cwd)                         # Last resort: current directory
     ]
-    
-    # Debug: Log all potential paths we're checking
-    for idx, loc in enumerate(possible_locations):
-        logger.info(f"Checking location {idx+1} for models: {loc}")
-        try:
-            if loc.exists():
-                logger.info(f"Directory exists. Contents: {list(loc.glob('*'))}")
-                # Check deeper for subdirectories
-                for subdir in ['Card', 'Characteristics', 'Shape']:
-                    subpath = loc / subdir
-                    if subpath.exists():
-                        logger.info(f"Found {subdir} directory at {subpath}")
-                        logger.info(f"Contents: {list(subpath.glob('*'))}")
-            else:
-                logger.info(f"Directory does not exist: {loc}")
-        except Exception as e:
-            logger.warning(f"Error checking path {loc}: {str(e)}")
     
     # Find the first valid path that contains the expected model directories
     base_dir = None
@@ -249,26 +232,11 @@ def load_models():
                 break
                 
         if base_dir is None:
-            # Log paths for debugging
             error_msg = "Model directories not found in any expected location"
             logger.error(error_msg)
-            try:
-                # Try to show file tree for debugging
-                import subprocess
-                result = subprocess.run(["find", str(cwd), "-type", "f", "-name", "*.pt", "-o", "-name", "*.keras"], 
-                                      capture_output=True, text=True)
-                logger.error(f"File search results: {result.stdout}")
-            except Exception as e:
-                logger.error(f"Error during file search: {e}")
             raise ModelLoadError(error_msg)
     
-    # Find specific model paths with version detection
-    # First check for versioned directories
-    card_versions = list(base_dir.glob("Card/*/"))
-    char_versions = list(base_dir.glob("Characteristics/*/"))
-    shape_versions = list(base_dir.glob("Shape/*/"))
-    
-    # If versions found, use the latest one (or specified one)
+    # Find specific model paths
     card_path = (base_dir / "Card" / "16042024" if (base_dir / "Card" / "16042024").exists() 
                 else (card_versions[-1] if card_versions else None))
                 
@@ -308,20 +276,7 @@ def load_models():
             logger.error(error_msg)
             raise ModelLoadError(error_msg)
         
-        # Load classification models
-        start_time = time.time()
-        logger.info("Loading shape classification model...")
-        model_shape = load_model(shape_model_path)
-        _model_cache.set('shape_model', model_shape)
-        logger.info(f"Shape model loaded successfully in {time.time() - start_time:.2f} seconds")
-        
-        logger.info("Loading fill classification model...")
-        start_time = time.time()
-        model_fill = load_model(fill_model_path)
-        _model_cache.set('fill_model', model_fill)
-        logger.info(f"Fill model loaded successfully in {time.time() - start_time:.2f} seconds")
-        
-        # Load YOLO models, CPU only - Important for Railway
+        # Load YOLO models first (these are more reliable across versions)
         logger.info("Loading shape detection model...")
         start_time = time.time()
         detector_shape = YOLO(detector_shape_path)
@@ -356,6 +311,52 @@ def load_models():
         _model_cache.set('detector_card', detector_card)
         logger.info(f"Card detection model loaded successfully in {time.time() - start_time:.2f} seconds")
         
+        # Now load TensorFlow models with extra compatibility handling
+        # Try different approaches for loading Keras models
+        logger.info("Loading TensorFlow models with compatibility handling...")
+        
+        try:
+            # First attempt: standard load_model
+            logger.info("Loading shape classification model (attempt 1)...")
+            start_time = time.time()
+            model_shape = load_model(shape_model_path)
+            _model_cache.set('shape_model', model_shape)
+            logger.info(f"Shape model loaded successfully in {time.time() - start_time:.2f} seconds")
+            
+            logger.info("Loading fill classification model...")
+            start_time = time.time()
+            model_fill = load_model(fill_model_path)
+            _model_cache.set('fill_model', model_fill)
+            logger.info(f"Fill model loaded successfully in {time.time() - start_time:.2f} seconds")
+            
+        except Exception as e:
+            logger.warning(f"Standard model loading failed: {e}. Trying alternative approach...")
+            
+            try:
+                # Second attempt: custom objects handling
+                import tensorflow as tf
+                from tensorflow.keras.models import load_model
+                
+                # Create a custom objects dictionary to handle compatibility
+                custom_objects = {}
+                
+                # Third attempt: Load with compile=False
+                logger.info("Loading shape classification model (attempt 2)...")
+                start_time = time.time()
+                model_shape = load_model(shape_model_path, compile=False, custom_objects=custom_objects)
+                _model_cache.set('shape_model', model_shape)
+                logger.info(f"Shape model loaded successfully in {time.time() - start_time:.2f} seconds")
+                
+                logger.info("Loading fill classification model...")
+                start_time = time.time()
+                model_fill = load_model(fill_model_path, compile=False, custom_objects=custom_objects)
+                _model_cache.set('fill_model', model_fill)
+                logger.info(f"Fill model loaded successfully in {time.time() - start_time:.2f} seconds")
+                
+            except Exception as e2:
+                logger.error(f"Failed to load TensorFlow models after multiple attempts: {e2}")
+                raise ModelLoadError(f"Could not load TensorFlow models: {e2}")
+        
         logger.info(f"All models loaded successfully")
         return model_shape, model_fill, detector_card, detector_shape
     
@@ -364,7 +365,6 @@ def load_models():
     except Exception as e:
         logger.error(f"Failed to load models: {str(e)}", exc_info=True)
         raise ModelLoadError(f"Failed to load models: {str(e)}")
-
 
 def correct_orientation(board_image, card_detector):
     """Rotate image if cards are vertical, with optimized processing."""
