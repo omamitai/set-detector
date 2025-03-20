@@ -145,7 +145,7 @@ def debug_file_structure():
         logger.error(f"Error in debug_file_structure: {e}")
 
 def load_models():
-    """Load models with caching and proper error handling."""
+    """Load models with improved path resolution for Railway deployment."""
     # Check cache first
     models = (
         _model_cache.get('shape_model'), 
@@ -157,27 +157,39 @@ def load_models():
         logger.debug("Using cached models")
         return models
     
-    # Print debug information about file structure
-    debug_file_structure()
-    
     logger.info("Loading models from disk")
     
-    # First, check if models are in the app's root directory
-    # For Railway deployment, models could be in multiple places:
-    # 1. Direct repository root (same level as app.py)
-    # 2. In a 'models' directory
-    # 3. In a custom directory specified by MODELS_DIR
+    # Define base paths with Railway-friendly path resolution
+    # For Railway, models should be in the repository root
+    app_root = Path(os.path.dirname(os.path.abspath(__file__)))
     
     # Try multiple potential locations for flexibility
     possible_locations = [
-        Path(os.environ.get('MODELS_DIR', 'models')),  # Check env var first
-        Path('models'),                                # Check models/ directory
-        Path('.')                                      # Check app root directory
+        app_root / "models",               # Check ./models/ directory (preferred)
+        app_root,                          # Check app root directory
+        Path(os.environ.get('MODELS_DIR', ''))  # Check custom env var if set
     ]
     
+    # Debug: Log all potential paths we're checking
+    for loc in possible_locations:
+        logger.info(f"Checking for models in: {loc}")
+        if loc.exists():
+            logger.info(f"Directory exists: {loc}")
+            try:
+                logger.info(f"Contents: {list(loc.glob('*'))}")
+            except Exception as e:
+                logger.info(f"Could not list contents: {e}")
+    
+    # Find the first valid path that contains the expected model directories
     base_dir = None
     for location in possible_locations:
-        if (location / "Card").exists() and (location / "Characteristics").exists() and (location / "Shape").exists():
+        if not location.exists():
+            continue
+            
+        # Check if this location has the expected model subdirectories
+        if ((location / "Card").exists() and 
+            (location / "Characteristics").exists() and 
+            (location / "Shape").exists()):
             base_dir = location
             logger.info(f"Found models at: {base_dir}")
             break
@@ -190,10 +202,12 @@ def load_models():
         logger.error(error_msg)
         raise ModelLoadError(error_msg)
     
+    # Define the specific model paths
     char_path = base_dir / "Characteristics" / "11022025"
     shape_path = base_dir / "Shape" / "15052024" 
     card_path = base_dir / "Card" / "16042024"
     
+    # Verify each path exists
     for path, name in [(char_path, 'Characteristics'), 
                        (shape_path, 'Shape'), 
                        (card_path, 'Card')]:
@@ -203,11 +217,13 @@ def load_models():
             raise ModelLoadError(error_msg)
     
     try:
+        # Define file paths for each model
         shape_model_path = str(char_path / "shape_model.keras")
         fill_model_path = str(char_path / "fill_model.keras")
         detector_shape_path = str(shape_path / "best.pt")
         detector_card_path = str(card_path / "best.pt")
         
+        # Check that each file exists
         missing_files = []
         for path in [shape_model_path, fill_model_path, detector_shape_path, detector_card_path]:
             if not os.path.exists(path):
@@ -235,7 +251,7 @@ def load_models():
         detector_shape.iou = 0.5   
         detector_shape.max_det = 15
         
-        # Check for data.yaml file (used in Colab example)
+        # Check for data.yaml file
         shape_yaml_path = str(shape_path / "data.yaml")
         if os.path.exists(shape_yaml_path):
             logger.info(f"Found shape data.yaml file, setting config")
@@ -250,7 +266,7 @@ def load_models():
         detector_card.iou = 0.5
         detector_card.max_det = 20
         
-        # Check for data.yaml file (used in Colab example)
+        # Check for data.yaml file
         card_yaml_path = str(card_path / "data.yaml")
         if os.path.exists(card_yaml_path):
             logger.info(f"Found card data.yaml file, setting config")
@@ -267,9 +283,6 @@ def load_models():
     except Exception as e:
         logger.error(f"Failed to load models: {str(e)}", exc_info=True)
         raise ModelLoadError(f"Failed to load models: {str(e)}")
-
-# The rest of the code remains the same as it focuses on core functionality
-# I'll include key functions but the rest is unchanged
 
 def correct_orientation(board_image, card_detector):
     """Rotate image if cards are vertical, with optimized processing."""
@@ -335,16 +348,293 @@ def predict_color(img_bgr):
         
     return max_color
 
-# Note: The rest of the functions remain the same as in the original code
-# Including detect_cards, predict_card_features, classify_cards_on_board, 
-# valid_set, locate_all_sets, draw_set_indicators, identify_sets
+def detect_cards(board_img, card_detector):
+    """Detect card bounding boxes using YOLO with CPU optimization."""
+    h, w = board_img.shape[:2]
+    max_dim = 1200
+    scale_factor = 1.0
+    
+    if max(h, w) > max_dim:
+        scale_factor = max_dim / max(h, w)
+        new_w, new_h = int(w * scale_factor), int(h * scale_factor)
+        board_img_small = cv2.resize(board_img, (new_w, new_h))
+        result = card_detector(board_img_small)
+        boxes = result[0].boxes.xyxy.cpu().numpy() / scale_factor
+    else:
+        result = card_detector(board_img)
+        boxes = result[0].boxes.xyxy.cpu().numpy()
+    
+    boxes = boxes.astype(int)
+    confs = result[0].boxes.conf.cpu().numpy()
+    
+    good_boxes = []
+    for i, (x1, y1, x2, y2) in enumerate(boxes):
+        if x1 >= 0 and y1 >= 0 and x2 < w and y2 < h and x2 > x1 and y2 > y1:
+            card_area = (x2 - x1) * (y2 - y1)
+            image_area = w * h
+            if card_area > 0.005 * image_area:  # card must be >=0.5% of the image
+                good_boxes.append((board_img[y1:y2, x1:x2], [x1, y1, x2, y2], confs[i]))
+    
+    logger.info(f"Detected {len(good_boxes)} valid cards")
+    return sorted(good_boxes, key=lambda x: x[2], reverse=True)
 
-# For brevity, I'm only showing the key function that would need adjustment
+def predict_card_features(card_img, shape_detector, fill_model, shape_model, card_box):
+    """
+    Predict features (count, color, fill, shape) for a single card.
+    Uses YOLO for shape detection + two Keras models for shape/fill classification.
+    """
+    c_h, c_w = card_img.shape[:2]
+    resized = False
+    
+    if c_h > 300 or c_w > 300:
+        scale = min(300 / c_h, 300 / c_w)
+        new_w, new_h = int(c_w * scale), int(c_h * scale)
+        card_img_small = cv2.resize(card_img, (new_w, new_h))
+        resized = True
+        scale_factor = 1 / scale
+    else:
+        card_img_small = card_img
+        scale_factor = 1.0
+    
+    # Mild contrast enhancement
+    adjusted_img = card_img_small.copy()
+    lab = cv2.cvtColor(adjusted_img, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    cl = clahe.apply(l)
+    merged = cv2.merge((cl, a, b))
+    adjusted_img = cv2.cvtColor(merged, cv2.COLOR_LAB2BGR)
+    
+    # Shape detection
+    try:
+        shape_detections = shape_detector(adjusted_img)
+    except Exception as e:
+        logger.error(f"Error detecting shapes on card: {e}")
+        return {'count': 0, 'color': 'unknown', 'fill': 'unknown', 'shape': 'unknown', 'box': card_box}
+        
+    small_card_area = adjusted_img.shape[1] * adjusted_img.shape[0]
+    shape_boxes = []
+    shape_scores = []
+    
+    for i, coords in enumerate(shape_detections[0].boxes.xyxy.cpu().numpy()):
+        x1, y1, x2, y2 = coords.astype(int)
+        shape_area = (x2 - x1) * (y2 - y1)
+        
+        min_shape_area = 0.02 * small_card_area
+        max_shape_area = 0.25 * small_card_area
+        
+        if min_shape_area < shape_area < max_shape_area:
+            conf_score = float(shape_detections[0].boxes.conf.cpu().numpy()[i])
+            if resized:
+                x1 = int(x1 * scale_factor)
+                y1 = int(y1 * scale_factor)
+                x2 = int(x2 * scale_factor)
+                y2 = int(y2 * scale_factor)
+            shape_boxes.append([x1, y1, x2, y2])
+            shape_scores.append(conf_score)
+    
+    if not shape_boxes:
+        logger.warning(f"No shapes detected in card at {card_box}")
+        return {'count': 0, 'color': 'unknown', 'fill': 'unknown', 'shape': 'unknown', 'box': card_box}
+    
+    fill_input_size = fill_model.input_shape[1:3]
+    shape_input_size = shape_model.input_shape[1:3]
+    fill_imgs, shape_imgs, color_candidates = [], [], []
+    
+    for sb in shape_boxes:
+        sx1, sy1, sx2, sy2 = sb
+        sy1 = max(0, sy1)
+        sy2 = min(card_img.shape[0], sy2)
+        sx1 = max(0, sx1)
+        sx2 = min(card_img.shape[1], sx2)
+        
+        if sx2 <= sx1 or sy2 <= sy1:
+            continue
+        
+        shape_crop = card_img[sy1:sy2, sx1:sx2]
+        if shape_crop.size == 0:
+            continue
+        
+        fill_imgs.append(cv2.resize(shape_crop, fill_input_size) / 255.0)
+        shape_imgs.append(cv2.resize(shape_crop, shape_input_size) / 255.0)
+        color_candidates.append(predict_color(shape_crop))
+    
+    if not fill_imgs:
+        return {'count': 0, 'color': 'unknown', 'fill': 'unknown', 'shape': 'unknown', 'box': card_box}
+    
+    batch_size = min(len(fill_imgs), 4)
+    try:
+        with tf.device('/cpu:0'):
+            fill_preds = fill_model.predict(np.array(fill_imgs), batch_size=batch_size, verbose=0)
+            shape_preds = shape_model.predict(np.array(shape_imgs), batch_size=batch_size, verbose=0)
+    except Exception as e:
+        logger.error(f"Error during model prediction: {e}")
+        return {'count': 0, 'color': 'unknown', 'fill': 'unknown', 'shape': 'unknown', 'box': card_box}
+    
+    fill_labels = ['empty', 'full', 'striped']
+    shape_labels = ['diamond', 'oval', 'squiggle']
+    
+    fill_result = [fill_labels[np.argmax(fp)] for fp in fill_preds]
+    shape_result = [shape_labels[np.argmax(sp)] for sp in shape_preds]
+    
+    shape_count = len(shape_boxes)
+    color_candidates = [c for c in color_candidates if c != 'unknown']
+    
+    if not color_candidates:
+        color = 'unknown'
+    else:
+        color = max(set(color_candidates), key=color_candidates.count)
+        
+    fill = max(set(fill_result), key=fill_result.count)
+    shape = max(set(shape_result), key=shape_result.count)
+    
+    return {
+        'count': shape_count,
+        'color': color,
+        'fill': fill,
+        'shape': shape,
+        'box': card_box
+    }
+
+def classify_cards_on_board(board_img, card_detector, shape_detector, fill_model, shape_model):
+    """Detect and classify all cards on the board."""
+    card_rows = []
+    try:
+        card_data = detect_cards(board_img, card_detector)
+    except Exception as e:
+        logger.error(f"Error detecting cards on board: {e}")
+        return pd.DataFrame()
+    
+    if not card_data:
+        logger.warning("No cards detected on board")
+        return pd.DataFrame()
+    
+    for card_img, box, conf in card_data:
+        try:
+            card_feats = predict_card_features(card_img, shape_detector, fill_model, shape_model, box)
+            valid_features = True
+            for key in ['count', 'color', 'fill', 'shape']:
+                if card_feats[key] == 'unknown' or card_feats[key] == 0:
+                    valid_features = False
+                    break
+            if valid_features:
+                card_rows.append({
+                    "Count": card_feats['count'],
+                    "Color": card_feats['color'],
+                    "Fill": card_feats['fill'],
+                    "Shape": card_feats['shape'],
+                    "Coordinates": card_feats['box'],
+                    "Confidence": conf
+                })
+        except Exception as e:
+            logger.error(f"Error processing card: {e}")
+            continue
+    
+    if len(card_rows) < 3:
+        logger.warning(f"Not enough valid cards detected: {len(card_rows)}")
+    else:
+        logger.info(f"Successfully classified {len(card_rows)} cards")
+        
+    return pd.DataFrame(card_rows)
+
+def valid_set(cards):
+    """Check if 3 cards form a valid SET."""
+    for feature in ["Count", "Color", "Fill", "Shape"]:
+        values = set(card[feature] for card in cards)
+        if len(values) not in (1, 3):
+            return False
+    return True
+
+def locate_all_sets(cards_df):
+    """Find all possible SETs from the cards."""
+    found_sets = []
+    if len(cards_df) < 3:
+        logger.warning(f"Not enough cards to form a SET: {len(cards_df)}")
+        return found_sets
+        
+    valid_cards = cards_df[
+        (cards_df['Count'] > 0) &
+        (cards_df['Color'] != 'unknown') &
+        (cards_df['Fill'] != 'unknown') &
+        (cards_df['Shape'] != 'unknown')
+    ]
+    
+    if len(valid_cards) < 3:
+        logger.warning(f"Not enough valid cards after filtering: {len(valid_cards)}")
+        return found_sets
+    
+    for combo in combinations(valid_cards.iterrows(), 3):
+        cards = [c[1] for c in combo]
+        if valid_set(cards):
+            found_sets.append({
+                'set_indices': [c[0] for c in combo],
+                'cards': [{
+                    f: card[f] for f in ['Count', 'Color', 'Fill', 'Shape', 'Coordinates']
+                } for card in cards]
+            })
+    
+    logger.info(f"Found {len(found_sets)} valid SETs")
+    return found_sets
+
+def draw_set_indicators(img, sets):
+    """
+    Draw bounding boxes around each card in the detected SETs. 
+    Removed the connecting lines to focus only on boxes.
+    """
+    result = img.copy()
+    
+    # Define a color palette with higher contrast
+    colors = [
+        (0, 0, 255),    # Red
+        (0, 255, 0),    # Green
+        (255, 0, 0),    # Blue
+        (0, 255, 255),  # Yellow
+        (255, 0, 255),  # Magenta
+        (255, 255, 0),  # Cyan
+        (128, 0, 255),  # Purple
+        (255, 128, 0),  # Orange
+        (0, 255, 128)   # Teal
+    ]
+    
+    for idx, set_info in enumerate(sets):
+        color = colors[idx % len(colors)]
+        
+        # Draw rectangles around each card (with a shadow effect)
+        for card in set_info['cards']:
+            x1, y1, x2, y2 = card['Coordinates']
+            
+            shadow_offset = 2
+            # Draw a black shadow rectangle
+            cv2.rectangle(result, (x1 - shadow_offset, y1 - shadow_offset), 
+                          (x2 + shadow_offset, y2 + shadow_offset), (0, 0, 0), 5)
+            # Draw the main rectangle in color
+            cv2.rectangle(result, (x1, y1), (x2, y2), color, 3)
+            
+            # Label the set number for clarity
+            label = f"Set {idx + 1}"
+            text_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
+            cv2.rectangle(
+                result,
+                (x1, y1 - text_size[1] - 10),
+                (x1 + text_size[0] + 10, y1),
+                color,
+                -1
+            )
+            cv2.putText(result, label, (x1 + 5, y1 - 5), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            
+    return result
 
 def identify_sets(image):
     """
-    Complete pipeline to find SETs in an image.
-    This is the main entry point for the SET detection functionality.
+    Complete pipeline to find SETs in an image:
+      1. Load models (with caching).
+      2. Possibly resize and denoise input for performance.
+      3. Correct orientation if needed.
+      4. Detect cards, then classify each one.
+      5. Locate all valid SETs among them.
+      6. Draw bounding boxes around each SET (no connecting lines).
+      7. Return the found sets and the annotated image.
     """
     start_time = time.time()
     logger.info(f"Starting SET detection on image of shape {image.shape}")
@@ -371,9 +661,6 @@ def identify_sets(image):
         except Exception as e:
             logger.warning(f"Error during orientation correction: {e}. Using original orientation.")
             processed, was_rotated = image_enhanced, False
-        
-        # The rest of the processing pipeline follows
-        # For Railway deployment, we ensure efficient memory usage
         
         df_cards = classify_cards_on_board(processed, detector_card, detector_shape, model_fill, model_shape)
         if df_cards.empty:
