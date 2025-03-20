@@ -1,4 +1,3 @@
-from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import os
 import uuid
@@ -14,8 +13,48 @@ import json
 from werkzeug.utils import secure_filename
 from set_detector import identify_sets, load_models, ModelLoadError
 
-# Initialize Flask app
+# Add this to the top of your app.py file, after imports
+from flask import Flask, request, jsonify, send_file, after_this_request
+
+# Then replace your CORS setup with this more robust version
+def setup_cors(app):
+    """Set up CORS with both middleware and per-request handlers for maximum compatibility"""
+    CORS_ORIGINS = os.environ.get('ALLOWED_ORIGINS', '*').split(',')
+    app.logger.info(f"Configuring CORS with allowed origins: {CORS_ORIGINS}")
+    
+    # Use Flask-CORS extension
+    CORS(app, 
+         resources={r"/*": {"origins": "*"}},
+         supports_credentials=False,
+         methods=["GET", "POST", "OPTIONS"],
+         allow_headers=["Content-Type", "Authorization", "X-Requested-With"],
+         expose_headers=["Content-Disposition"],
+         max_age=86400)  # Cache preflight requests for 24 hours
+         
+    # Also add before_request and after_request handlers for double protection
+    @app.before_request
+    def handle_options():
+        """Handle OPTIONS requests explicitly for CORS preflight"""
+        if request.method == 'OPTIONS':
+            response = app.make_default_options_response()
+            add_cors_headers(response)
+            return response
+    
+    @app.after_request
+    def add_cors_headers(response):
+        """Add CORS headers to every response"""
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-Requested-With'
+        response.headers['Access-Control-Expose-Headers'] = 'Content-Disposition'
+        response.headers['Access-Control-Max-Age'] = '86400'  # 24 hours
+        return response
+    
+    return app
+
+# Then use it to initialize your app
 app = Flask(__name__)
+app = setup_cors(app)
 
 # Configure logging
 logging.basicConfig(
@@ -29,27 +68,6 @@ MAX_WORKERS = int(os.environ.get('MAX_WORKERS', '2'))
 PORT = int(os.environ.get('PORT', '5000'))  # Railway provides PORT env var
 app.logger.info(f"Configured with MAX_WORKERS={MAX_WORKERS}, PORT={PORT}")
 
-# Configure CORS - Accept requests from all origins during development
-CORS_ORIGINS = os.environ.get('ALLOWED_ORIGINS', '*').split(',')
-app.logger.info(f"Configuring CORS with allowed origins: {CORS_ORIGINS}")
-
-# Configure CORS more comprehensively
-if '*' in CORS_ORIGINS:
-    CORS(app, 
-         resources={r"/*": {"origins": "*"}},
-         supports_credentials=False,
-         methods=["GET", "POST", "OPTIONS"],
-         allow_headers=["Content-Type", "Authorization", "X-Requested-With"],
-         expose_headers=["Content-Disposition"],
-         max_age=86400)  # Cache preflight requests for 24 hours
-else:
-    CORS(app, 
-         resources={r"/*": {"origins": CORS_ORIGINS}},
-         supports_credentials=True,
-         methods=["GET", "POST", "OPTIONS"],
-         allow_headers=["Content-Type", "Authorization", "X-Requested-With"],
-         expose_headers=["Content-Disposition"],
-         max_age=86400)
 
 # Allowed file extensions
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
