@@ -3,8 +3,8 @@ builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-# Fixed command - Railway doesn't support ${VAR:-default} syntax
-startCommand = "gunicorn --workers=3 --timeout=120 --bind 0.0.0.0:$PORT app:app"
+# Use hardcoded port 5000 - Railway will automatically proxy to this port
+startCommand = "gunicorn --workers=3 --timeout=120 --bind 0.0.0.0:5000 app:app"
 healthcheckPath = "/api/health"
 healthcheckTimeout = 600
 healthcheckInterval = 30
