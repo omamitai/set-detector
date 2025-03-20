@@ -12,6 +12,7 @@ import logging
 import threading
 import time
 import gc
+import sys
 
 # Custom exception for model loading errors
 class ModelLoadError(Exception):
@@ -49,9 +50,11 @@ try:
     
     logger.info(f"Configuring TensorFlow with {THREAD_COUNT} threads (detected {CPU_COUNT} CPUs)")
     
+    # Railway has limited CPU resources, so we need to be careful not to overuse them
     tf.config.threading.set_intra_op_parallelism_threads(THREAD_COUNT)
     tf.config.threading.set_inter_op_parallelism_threads(1)
     
+    # Disable eager execution for better performance
     tf.compat.v1.disable_eager_execution()
     
     # Enable memory growth for GPU if available
@@ -146,7 +149,11 @@ def debug_file_structure():
 
 
 def load_models():
-    """Load models with improved path resolution for Railway deployment."""
+    """
+    Load ML models with improved path resolution for Railway deployment.
+    
+    Enhanced with multiple fallback paths and better error handling.
+    """
     # Check cache first
     models = (
         _model_cache.get('shape_model'), 
@@ -160,13 +167,15 @@ def load_models():
     
     logger.info("Loading models from disk")
     
-    # Get current working directory and debug environment
+    # Debug the environment
+    debug_file_structure()
+    
+    # Get current working directory
     cwd = os.getcwd()
     logger.info(f"Current working directory: {cwd}")
-    logger.info(f"Directory contents: {os.listdir(cwd)}")
     
-    # Try to read MODELS_DIR from environment
-    models_dir_env = os.environ.get('MODELS_DIR')
+    # Try to read MODELS_DIR from environment with a fallback
+    models_dir_env = os.environ.get('MODELS_DIR', '/app/models')
     logger.info(f"MODELS_DIR environment variable: {models_dir_env}")
     
     # Define base paths with Railway-friendly path resolution
@@ -175,10 +184,12 @@ def load_models():
     
     # Try multiple potential locations for flexibility
     possible_locations = [
-        Path(cwd) / "models",                # Check models in current working directory (Railway)
-        app_root / "models",                 # Check ./models/ directory (preferred)
-        app_root,                            # Check app root directory
-        Path(models_dir_env) if models_dir_env else Path(".")  # Check custom env var if set
+        Path(models_dir_env),             # First check environment variable
+        Path(cwd) / "models",             # Check models in current working directory (Railway)
+        app_root / "models",              # Check ./models/ directory
+        app_root.parent / "models",       # Check parent directory
+        Path("/app/models"),              # Docker default location
+        Path(cwd)                         # Last resort: current directory
     ]
     
     # Debug: Log all potential paths we're checking
@@ -205,48 +216,74 @@ def load_models():
             continue
             
         # Check if this location has the expected model subdirectories
-        if ((location / "Card").exists() and 
-            (location / "Characteristics").exists() and 
-            (location / "Shape").exists()):
+        card_dir = location / "Card"
+        char_dir = location / "Characteristics"
+        shape_dir = location / "Shape"
+        
+        if card_dir.exists() and char_dir.exists() and shape_dir.exists():
             base_dir = location
             logger.info(f"Found models at: {base_dir}")
+            break
+            
+        # Check if we have model directories with version numbers
+        card_versions = [d for d in location.glob("Card/*") if d.is_dir()]
+        char_versions = [d for d in location.glob("Characteristics/*") if d.is_dir()]
+        shape_versions = [d for d in location.glob("Shape/*") if d.is_dir()]
+        
+        if card_versions and char_versions and shape_versions:
+            base_dir = location
+            logger.info(f"Found models with versioned directories at: {base_dir}")
             break
     
     if base_dir is None:
         # Last fallback - check if we have nested models directory
-        models_nested = Path(cwd) / "models" / "models"
-        if models_nested.exists() and any([(models_nested / subdir).exists() for subdir in ['Card', 'Characteristics', 'Shape']]):
-            base_dir = models_nested
-            logger.info(f"Found models in nested directory: {base_dir}")
-        else:
+        for nested_path in [
+            Path(cwd) / "models" / "models",
+            Path("/app") / "models" / "models"
+        ]:
+            if nested_path.exists() and any([
+                (nested_path / subdir).exists() for subdir in ['Card', 'Characteristics', 'Shape']
+            ]):
+                base_dir = nested_path
+                logger.info(f"Found models in nested directory: {base_dir}")
+                break
+                
+        if base_dir is None:
             # Log paths for debugging
             error_msg = "Model directories not found in any expected location"
             logger.error(error_msg)
             try:
                 # Try to show file tree for debugging
                 import subprocess
-                result = subprocess.run(["find", cwd, "-type", "f", "-name", "*.pt", "-o", "-name", "*.keras"], 
-                                       capture_output=True, text=True)
+                result = subprocess.run(["find", str(cwd), "-type", "f", "-name", "*.pt", "-o", "-name", "*.keras"], 
+                                      capture_output=True, text=True)
                 logger.error(f"File search results: {result.stdout}")
             except Exception as e:
                 logger.error(f"Error during file search: {e}")
             raise ModelLoadError(error_msg)
     
-    # Define the specific model paths
-    char_path = base_dir / "Characteristics" / "11022025"
-    shape_path = base_dir / "Shape" / "15052024" 
-    card_path = base_dir / "Card" / "16042024"
+    # Find specific model paths with version detection
+    # First check for versioned directories
+    card_versions = list(base_dir.glob("Card/*/"))
+    char_versions = list(base_dir.glob("Characteristics/*/"))
+    shape_versions = list(base_dir.glob("Shape/*/"))
     
-    logger.info(f"Using model paths: Characteristics={char_path}, Shape={shape_path}, Card={card_path}")
+    # If versions found, use the latest one (or specified one)
+    card_path = (base_dir / "Card" / "16042024" if (base_dir / "Card" / "16042024").exists() 
+                else (card_versions[-1] if card_versions else None))
+                
+    char_path = (base_dir / "Characteristics" / "11022025" if (base_dir / "Characteristics" / "11022025").exists() 
+                else (char_versions[-1] if char_versions else None))
+                
+    shape_path = (base_dir / "Shape" / "15052024" if (base_dir / "Shape" / "15052024").exists() 
+                else (shape_versions[-1] if shape_versions else None))
     
-    # Verify each path exists
-    for path, name in [(char_path, 'Characteristics'), 
-                     (shape_path, 'Shape'), 
-                     (card_path, 'Card')]:
-        if not path.exists():
-            error_msg = f"Model directory {name} not found at {path}"
-            logger.error(error_msg)
-            raise ModelLoadError(error_msg)
+    if not all([card_path, char_path, shape_path]):
+        error_msg = f"Missing model directories. Found: card={card_path}, char={char_path}, shape={shape_path}"
+        logger.error(error_msg)
+        raise ModelLoadError(error_msg)
+    
+    logger.info(f"Using model paths: Card={card_path}, Characteristics={char_path}, Shape={shape_path}")
     
     try:
         # Define file paths for each model
@@ -533,10 +570,17 @@ def predict_card_features(card_img, shape_detector, fill_model, shape_model, car
     fill = max(set(fill_result), key=fill_result.count)
     shape = max(set(shape_result), key=shape_result.count)
     
+    # Translate fill to standard terms
+    fill_mapping = {
+        'empty': 'outline',
+        'full': 'solid',
+        'striped': 'striped'
+    }
+    
     return {
         'count': shape_count,
         'color': color,
-        'fill': fill,
+        'fill': fill_mapping.get(fill, fill),
         'shape': shape,
         'box': card_box
     }
@@ -685,7 +729,12 @@ def identify_sets(image):
     logger.info(f"Starting SET detection on image of shape {image.shape}")
     
     try:
-        model_shape, model_fill, detector_card, detector_shape = load_models()
+        # Load models with error handling
+        try:
+            model_shape, model_fill, detector_card, detector_shape = load_models()
+        except Exception as e:
+            logger.error(f"Error loading models: {e}")
+            return [], image
         
         h, w = image.shape[:2]
         max_dim = 1500
