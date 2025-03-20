@@ -270,7 +270,7 @@ def get_session_image(session_id, image_type):
         as_attachment=False,
         download_name=f"{session_id}_{image_type}.jpg"
     )
-    
+
 @app.route('/api/health')
 def health_check():
     """Enhanced health check endpoint for monitoring."""
@@ -319,7 +319,7 @@ def root():
         'version': '1.0.0',
         'health_endpoint': '/api/health'
     })
-    
+
 # If this is the main module, run the app
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=PORT, debug=False)
