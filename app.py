@@ -270,7 +270,7 @@ def get_session_image(session_id, image_type):
         as_attachment=False,
         download_name=f"{session_id}_{image_type}.jpg"
     )
-
+    
 @app.route('/api/health')
 def health_check():
     """Enhanced health check endpoint for monitoring."""
@@ -298,12 +298,16 @@ def health_check():
         # Only report healthy if models are available
         status = "healthy" if models_available else "degraded"
         return jsonify({
-        'status': status,  # Always return healthy
-        'models_status': models_status,
-        'memory': memory_info
-    }), 200
-
-        
+            'status': status,
+            'models_status': models_status,
+            'memory': memory_info
+        }), 200
+    except Exception as e:
+        logger.error(f"Error in health check: {e}")
+        return jsonify({
+            'status': 'error',
+            'error': str(e)
+        }), 500
 
 
 # Railway expects root path to be accessible
@@ -315,7 +319,7 @@ def root():
         'version': '1.0.0',
         'health_endpoint': '/api/health'
     })
-
+    
 # If this is the main module, run the app
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=PORT, debug=False)
