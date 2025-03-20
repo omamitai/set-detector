@@ -13,6 +13,7 @@ import threading
 import time
 import gc
 import sys
+import traceback
 
 # Custom exception for model loading errors
 class ModelLoadError(Exception):
@@ -69,13 +70,36 @@ try:
 except Exception as e:
     logger.warning(f"Failed to configure TensorFlow optimally: {e}")
 
+# Global variables to track model loading status
+MODEL_LOADING_STATUS = {
+    "state": "not_started",  # Options: not_started, in_progress, success, failed
+    "error": None,
+    "last_attempt": 0,
+    "attempts": 0,
+    "details": {}
+}
+
 # Cached models with TTL to prevent memory leaks
 class ModelCache:
-    def __init__(self, ttl=3600):  # 1-hour TTL by default
+    _instance = None
+    
+    def __new__(cls, *args, **kwargs):
+        # Singleton pattern to ensure same cache across workers
+        if cls._instance is None:
+            cls._instance = super(ModelCache, cls).__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+    
+    def __init__(self, ttl=3600):
+        # Initialize only once
+        if self._initialized:
+            return
+            
         self._cache = {}
         self._lock = threading.Lock()
         self._ttl = ttl
         self._last_cleanup = time.time()
+        self._initialized = True
         
     def get(self, key):
         with self._lock:
@@ -92,6 +116,11 @@ class ModelCache:
                 'model': model,
                 'timestamp': time.time()
             }
+    
+    def clear(self):
+        with self._lock:
+            self._cache.clear()
+            gc.collect()
             
     def _cleanup(self):
         now = time.time()
@@ -115,6 +144,10 @@ class ModelCache:
 # Create model cache as module-level variable
 _model_cache = ModelCache()
 
+def get_model_loading_status():
+    """Get the current model loading status."""
+    return MODEL_LOADING_STATUS
+
 def debug_file_structure():
     """Helper function to debug file structure in Railway environment"""
     try:
@@ -125,246 +158,251 @@ def debug_file_structure():
         root_contents = os.listdir(cwd)
         logger.info(f"Root directory contents: {root_contents}")
         
-        # Check for models directory
-        if 'models' in root_contents:
-            models_path = os.path.join(cwd, 'models')
-            models_contents = os.listdir(models_path)
-            logger.info(f"Models directory contents: {models_contents}")
+        # Check MODELS_DIR environment variable
+        models_dir_env = os.environ.get('MODELS_DIR', '/app/models')
+        logger.info(f"MODELS_DIR environment variable: {models_dir_env}")
+        
+        # Check if MODELS_DIR exists
+        if os.path.exists(models_dir_env):
+            logger.info(f"MODELS_DIR exists: {models_dir_env}")
+            models_contents = os.listdir(models_dir_env)
+            logger.info(f"MODELS_DIR contents: {models_contents}")
             
             # Check subdirectories
             for subdir in models_contents:
-                subdir_path = os.path.join(models_path, subdir)
+                subdir_path = os.path.join(models_dir_env, subdir)
                 if os.path.isdir(subdir_path):
                     logger.info(f"Contents of {subdir}: {os.listdir(subdir_path)}")
-        
-        # Check for model directories at root level
-        for model_dir in ['Card', 'Characteristics', 'Shape']:
-            if model_dir in root_contents:
-                dir_path = os.path.join(cwd, model_dir)
-                if os.path.isdir(dir_path):
-                    logger.info(f"{model_dir} found at root level: {os.listdir(dir_path)}")
+                    
+                    # Check version subdirectories
+                    for version_dir in os.listdir(subdir_path):
+                        version_path = os.path.join(subdir_path, version_dir)
+                        if os.path.isdir(version_path):
+                            logger.info(f"Contents of {subdir}/{version_dir}: {os.listdir(version_path)}")
+        else:
+            logger.warning(f"MODELS_DIR does not exist: {models_dir_env}")
+            
+            # Check if models directory exists at root level
+            if 'models' in root_contents:
+                models_path = os.path.join(cwd, 'models')
+                models_contents = os.listdir(models_path)
+                logger.info(f"Found models at root: {models_contents}")
+                
+                # Check subdirectories
+                for subdir in models_contents:
+                    subdir_path = os.path.join(models_path, subdir)
+                    if os.path.isdir(subdir_path):
+                        logger.info(f"Contents of models/{subdir}: {os.listdir(subdir_path)}")
     
     except Exception as e:
         logger.error(f"Error in debug_file_structure: {e}")
+        logger.error(traceback.format_exc())
 
-
-def load_models():
+def load_models(force_reload=False):
     """
     Load ML models with improved path resolution and compatibility handling.
     
-    This version includes TensorFlow compatibility fixes and better error handling.
+    Args:
+        force_reload (bool): Force reload models even if they're cached
+        
+    Returns:
+        tuple: (model_shape, model_fill, detector_card, detector_shape)
+    
+    Raises:
+        ModelLoadError: If models cannot be loaded
     """
-    # Check cache first
-    models = (
-        _model_cache.get('shape_model'), 
-        _model_cache.get('fill_model'),
-        _model_cache.get('detector_card'),
-        _model_cache.get('detector_shape')
-    )
-    if all(models):
-        logger.debug("Using cached models")
-        return models
+    global MODEL_LOADING_STATUS
     
-    logger.info("Loading models from disk")
+    # Update status to in_progress
+    MODEL_LOADING_STATUS["state"] = "in_progress"
+    MODEL_LOADING_STATUS["last_attempt"] = time.time()
+    MODEL_LOADING_STATUS["attempts"] += 1
     
-    # Debug the environment
+    # Debug file structure to see what's available
     debug_file_structure()
     
-    # Get current working directory
-    cwd = os.getcwd()
-    logger.info(f"Current working directory: {cwd}")
-    
-    # Try to read MODELS_DIR from environment with a fallback
-    models_dir_env = os.environ.get('MODELS_DIR', '/app/models')
-    logger.info(f"MODELS_DIR environment variable: {models_dir_env}")
-    
-    # Define base paths with Railway-friendly path resolution
-    app_root = Path(os.path.dirname(os.path.abspath(__file__)))
-    logger.info(f"App root directory: {app_root}")
-    
-    # Try multiple potential locations for flexibility
-    possible_locations = [
-        Path(models_dir_env),             # First check environment variable
-        Path(cwd) / "models",             # Check models in current working directory (Railway)
-        app_root / "models",              # Check ./models/ directory
-        app_root.parent / "models",       # Check parent directory
-        Path("/app/models"),              # Docker default location
-        Path(cwd)                         # Last resort: current directory
-    ]
-    
-    # Find the first valid path that contains the expected model directories
-    base_dir = None
-    for location in possible_locations:
-        if not location.exists():
-            continue
-            
-        # Check if this location has the expected model subdirectories
-        card_dir = location / "Card"
-        char_dir = location / "Characteristics"
-        shape_dir = location / "Shape"
-        
-        if card_dir.exists() and char_dir.exists() and shape_dir.exists():
-            base_dir = location
-            logger.info(f"Found models at: {base_dir}")
-            break
-            
-        # Check if we have model directories with version numbers
-        card_versions = [d for d in location.glob("Card/*") if d.is_dir()]
-        char_versions = [d for d in location.glob("Characteristics/*") if d.is_dir()]
-        shape_versions = [d for d in location.glob("Shape/*") if d.is_dir()]
-        
-        if card_versions and char_versions and shape_versions:
-            base_dir = location
-            logger.info(f"Found models with versioned directories at: {base_dir}")
-            break
-    
-    if base_dir is None:
-        # Last fallback - check if we have nested models directory
-        for nested_path in [
-            Path(cwd) / "models" / "models",
-            Path("/app") / "models" / "models"
-        ]:
-            if nested_path.exists() and any([
-                (nested_path / subdir).exists() for subdir in ['Card', 'Characteristics', 'Shape']
-            ]):
-                base_dir = nested_path
-                logger.info(f"Found models in nested directory: {base_dir}")
-                break
-                
-        if base_dir is None:
-            error_msg = "Model directories not found in any expected location"
-            logger.error(error_msg)
-            raise ModelLoadError(error_msg)
-    
-    # Find specific model paths
-    card_path = (base_dir / "Card" / "16042024" if (base_dir / "Card" / "16042024").exists() 
-                else (card_versions[-1] if card_versions else None))
-                
-    char_path = (base_dir / "Characteristics" / "11022025" if (base_dir / "Characteristics" / "11022025").exists() 
-                else (char_versions[-1] if char_versions else None))
-                
-    shape_path = (base_dir / "Shape" / "15052024" if (base_dir / "Shape" / "15052024").exists() 
-                else (shape_versions[-1] if shape_versions else None))
-    
-    if not all([card_path, char_path, shape_path]):
-        error_msg = f"Missing model directories. Found: card={card_path}, char={char_path}, shape={shape_path}"
-        logger.error(error_msg)
-        raise ModelLoadError(error_msg)
-    
-    logger.info(f"Using model paths: Card={card_path}, Characteristics={char_path}, Shape={shape_path}")
-    
     try:
-        # Define file paths for each model
-        shape_model_path = str(char_path / "shape_model.keras")
-        fill_model_path = str(char_path / "fill_model.keras")
-        detector_shape_path = str(shape_path / "best.pt")
-        detector_card_path = str(card_path / "best.pt")
+        # Check cache first if not forcing reload
+        if not force_reload:
+            models = (
+                _model_cache.get('shape_model'), 
+                _model_cache.get('fill_model'),
+                _model_cache.get('detector_card'),
+                _model_cache.get('detector_shape')
+            )
+            if all(models):
+                logger.info("Using cached models")
+                MODEL_LOADING_STATUS["state"] = "success"
+                return models
+        else:
+            # Clear cache if forcing reload
+            _model_cache.clear()
+            logger.info("Force reloading models - cache cleared")
+    
+        logger.info(f"Loading models (attempt #{MODEL_LOADING_STATUS['attempts']})")
         
-        # Check that each file exists
-        missing_files = []
-        for path, name in [
-            (shape_model_path, "shape_model.keras"),
-            (fill_model_path, "fill_model.keras"),
-            (detector_shape_path, "best.pt (Shape)"),
-            (detector_card_path, "best.pt (Card)")
-        ]:
-            if not os.path.exists(path):
-                missing_files.append(f"{name} at {path}")
+        # SIMPLIFIED PATH RESOLUTION STRATEGY
+        # First check the environment variable, then fallback to default paths
+        models_base_dir = os.environ.get('MODELS_DIR', '/app/models')
+        logger.info(f"Using models base directory: {models_base_dir}")
         
-        if missing_files:
-            error_msg = f"Missing model files: {', '.join(missing_files)}"
+        # Verify base directory exists
+        if not os.path.exists(models_base_dir):
+            error_msg = f"Models base directory does not exist: {models_base_dir}"
             logger.error(error_msg)
             raise ModelLoadError(error_msg)
         
-        # Load YOLO models first (these are more reliable across versions)
-        logger.info("Loading shape detection model...")
-        start_time = time.time()
-        detector_shape = YOLO(detector_shape_path)
-        detector_shape.conf = 0.5  # Match Colab example confidence threshold
-        detector_shape.iou = 0.5   
-        detector_shape.max_det = 15
+        # Define expected paths for model directories
+        expected_dirs = {
+            'card': os.path.join(models_base_dir, "Card", "16042024"),
+            'char': os.path.join(models_base_dir, "Characteristics", "11022025"),
+            'shape': os.path.join(models_base_dir, "Shape", "15052024")
+        }
         
-        # Check for data.yaml file
-        shape_yaml_path = str(shape_path / "data.yaml")
-        if os.path.exists(shape_yaml_path):
-            logger.info(f"Found shape data.yaml file, setting config")
-            detector_shape.yaml = shape_yaml_path
+        # Check each directory exists
+        for dir_name, dir_path in expected_dirs.items():
+            if not os.path.exists(dir_path):
+                error_msg = f"Expected model directory not found: {dir_path}"
+                logger.error(error_msg)
+                raise ModelLoadError(error_msg)
+            else:
+                logger.info(f"Found {dir_name} directory: {dir_path}")
+                # List contents for debugging
+                logger.info(f"Contents of {dir_name} directory: {os.listdir(dir_path)}")
         
-        detector_shape.to("cpu")  # Ensure CPU usage for Railway compatibility
-        _model_cache.set('detector_shape', detector_shape)
-        logger.info(f"Shape detection model loaded successfully in {time.time() - start_time:.2f} seconds")
+        # Define expected model file paths
+        model_paths = {
+            'shape_model': os.path.join(expected_dirs['char'], "shape_model.keras"),
+            'fill_model': os.path.join(expected_dirs['char'], "fill_model.keras"),
+            'detector_shape': os.path.join(expected_dirs['shape'], "best.pt"),
+            'detector_card': os.path.join(expected_dirs['card'], "best.pt"),
+            'shape_yaml': os.path.join(expected_dirs['shape'], "data.yaml"),
+            'card_yaml': os.path.join(expected_dirs['card'], "data.yaml")
+        }
         
-        logger.info("Loading card detection model...")
-        start_time = time.time()
-        detector_card = YOLO(detector_card_path)
-        detector_card.conf = 0.5  # Match Colab example confidence threshold
-        detector_card.iou = 0.5
-        detector_card.max_det = 20
+        # Check each model file exists
+        missing_files = []
+        for model_name, model_path in model_paths.items():
+            if not os.path.exists(model_path):
+                if model_name not in ['shape_yaml', 'card_yaml']:  # These are optional
+                    missing_files.append(f"{model_name} at {model_path}")
+            else:
+                file_size = os.path.getsize(model_path) / (1024 * 1024)  # Size in MB
+                logger.info(f"Found {model_name}: {model_path} ({file_size:.2f} MB)")
+                
+        if missing_files:
+            error_msg = f"Missing required model files: {', '.join(missing_files)}"
+            logger.error(error_msg)
+            raise ModelLoadError(error_msg)
         
-        # Check for data.yaml file
-        card_yaml_path = str(card_path / "data.yaml")
-        if os.path.exists(card_yaml_path):
-            logger.info(f"Found card data.yaml file, setting config")
-            detector_card.yaml = card_yaml_path
-            
-        detector_card.to("cpu")  # Ensure CPU usage for Railway compatibility
-        _model_cache.set('detector_card', detector_card)
-        logger.info(f"Card detection model loaded successfully in {time.time() - start_time:.2f} seconds")
-        
-        # Now load TensorFlow models with extra compatibility handling
-        # Try different approaches for loading Keras models
-        logger.info("Loading TensorFlow models with compatibility handling...")
+        # Update status details
+        MODEL_LOADING_STATUS["details"]["paths_verified"] = True
         
         try:
-            # First attempt: standard load_model
-            logger.info("Loading shape classification model (attempt 1)...")
+            # Load YOLO models first - these are more reliable across environments
+            logger.info("Loading card detection model...")
             start_time = time.time()
-            model_shape = load_model(shape_model_path)
+            detector_card = YOLO(model_paths['detector_card'])
+            detector_card.conf = 0.5
+            detector_card.iou = 0.5
+            detector_card.max_det = 20
+            
+            # Check for card yaml file
+            if os.path.exists(model_paths['card_yaml']):
+                logger.info(f"Setting card yaml config: {model_paths['card_yaml']}")
+                detector_card.yaml = model_paths['card_yaml']
+                
+            detector_card.to("cpu")  # Ensure CPU usage for Railway compatibility
+            _model_cache.set('detector_card', detector_card)
+            logger.info(f"Card detection model loaded in {time.time() - start_time:.2f} seconds")
+            
+            # Update status details
+            MODEL_LOADING_STATUS["details"]["card_detector_loaded"] = True
+            
+            logger.info("Loading shape detection model...")
+            start_time = time.time()
+            detector_shape = YOLO(model_paths['detector_shape'])
+            detector_shape.conf = 0.5
+            detector_shape.iou = 0.5
+            detector_shape.max_det = 15
+            
+            # Check for shape yaml file
+            if os.path.exists(model_paths['shape_yaml']):
+                logger.info(f"Setting shape yaml config: {model_paths['shape_yaml']}")
+                detector_shape.yaml = model_paths['shape_yaml']
+                
+            detector_shape.to("cpu")  # Ensure CPU usage for Railway compatibility
+            _model_cache.set('detector_shape', detector_shape)
+            logger.info(f"Shape detection model loaded in {time.time() - start_time:.2f} seconds")
+            
+            # Update status details
+            MODEL_LOADING_STATUS["details"]["shape_detector_loaded"] = True
+            
+            # Now load TensorFlow models with proper error handling
+            logger.info("Loading shape classification model...")
+            start_time = time.time()
+            
+            # Try with multiple approaches for maximum compatibility
+            try:
+                model_shape = load_model(model_paths['shape_model'])
+            except Exception as e:
+                logger.warning(f"Standard model loading failed: {e}. Trying with compile=False...")
+                model_shape = load_model(model_paths['shape_model'], compile=False)
+                
             _model_cache.set('shape_model', model_shape)
-            logger.info(f"Shape model loaded successfully in {time.time() - start_time:.2f} seconds")
+            logger.info(f"Shape classification model loaded in {time.time() - start_time:.2f} seconds")
+            
+            # Update status details
+            MODEL_LOADING_STATUS["details"]["shape_model_loaded"] = True
             
             logger.info("Loading fill classification model...")
             start_time = time.time()
-            model_fill = load_model(fill_model_path)
+            
+            # Try with multiple approaches for maximum compatibility
+            try:
+                model_fill = load_model(model_paths['fill_model'])
+            except Exception as e:
+                logger.warning(f"Standard model loading failed: {e}. Trying with compile=False...")
+                model_fill = load_model(model_paths['fill_model'], compile=False)
+                
             _model_cache.set('fill_model', model_fill)
-            logger.info(f"Fill model loaded successfully in {time.time() - start_time:.2f} seconds")
+            logger.info(f"Fill classification model loaded in {time.time() - start_time:.2f} seconds")
+            
+            # Update status details
+            MODEL_LOADING_STATUS["details"]["fill_model_loaded"] = True
+            
+            # Run garbage collection to free memory
+            gc.collect()
+            
+            logger.info("All models loaded successfully!")
+            
+            # Update status to success
+            MODEL_LOADING_STATUS["state"] = "success"
+            MODEL_LOADING_STATUS["error"] = None
+            
+            return model_shape, model_fill, detector_card, detector_shape
             
         except Exception as e:
-            logger.warning(f"Standard model loading failed: {e}. Trying alternative approach...")
+            error_msg = f"Error loading models: {str(e)}"
+            logger.error(error_msg)
+            logger.error(traceback.format_exc())
             
-            try:
-                # Second attempt: custom objects handling
-                import tensorflow as tf
-                from tensorflow.keras.models import load_model
-                
-                # Create a custom objects dictionary to handle compatibility
-                custom_objects = {}
-                
-                # Third attempt: Load with compile=False
-                logger.info("Loading shape classification model (attempt 2)...")
-                start_time = time.time()
-                model_shape = load_model(shape_model_path, compile=False, custom_objects=custom_objects)
-                _model_cache.set('shape_model', model_shape)
-                logger.info(f"Shape model loaded successfully in {time.time() - start_time:.2f} seconds")
-                
-                logger.info("Loading fill classification model...")
-                start_time = time.time()
-                model_fill = load_model(fill_model_path, compile=False, custom_objects=custom_objects)
-                _model_cache.set('fill_model', model_fill)
-                logger.info(f"Fill model loaded successfully in {time.time() - start_time:.2f} seconds")
-                
-            except Exception as e2:
-                logger.error(f"Failed to load TensorFlow models after multiple attempts: {e2}")
-                raise ModelLoadError(f"Could not load TensorFlow models: {e2}")
-        
-        logger.info(f"All models loaded successfully")
-        return model_shape, model_fill, detector_card, detector_shape
+            # Update status to failed
+            MODEL_LOADING_STATUS["state"] = "failed"
+            MODEL_LOADING_STATUS["error"] = str(e)
+            
+            raise ModelLoadError(error_msg)
     
-    except ModelLoadError:
-        raise
     except Exception as e:
-        logger.error(f"Failed to load models: {str(e)}", exc_info=True)
-        raise ModelLoadError(f"Failed to load models: {str(e)}")
+        error_msg = f"Failed to load models: {str(e)}"
+        logger.error(error_msg)
+        logger.error(traceback.format_exc())
+        
+        # Update status to failed
+        MODEL_LOADING_STATUS["state"] = "failed"
+        MODEL_LOADING_STATUS["error"] = str(e)
+        
+        raise ModelLoadError(error_msg)
 
 def correct_orientation(board_image, card_detector):
     """Rotate image if cards are vertical, with optimized processing."""
