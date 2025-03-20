@@ -48,6 +48,6 @@ ENV MAX_WORKERS=2 \
     SESSION_TTL=300 \
     CLEANUP_INTERVAL=60 \
     MAX_MEMORY_PERCENT=80
-
-# Command to run the application
-CMD gunicorn --workers=${MAX_WORKERS} --timeout=120 --bind 0.0.0.0:${PORT} app:app
+    
+# Command to run the application with shell form
+CMD gunicorn --workers=3 --timeout=120 --bind 0.0.0.0:${PORT:-5000} app:app
