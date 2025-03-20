@@ -17,6 +17,18 @@ from set_detector import identify_sets, load_models, ModelLoadError
 # Initialize Flask app
 app = Flask(__name__)
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler()]
+)
+
+# Get environment variables with Railway-compatible defaults
+MAX_WORKERS = int(os.environ.get('MAX_WORKERS', '2'))
+PORT = int(os.environ.get('PORT', '5000'))  # Railway provides PORT env var
+app.logger.info(f"Configured with MAX_WORKERS={MAX_WORKERS}, PORT={PORT}")
+
 # Configure CORS - Accept requests from all origins during development
 CORS_ORIGINS = os.environ.get('ALLOWED_ORIGINS', '*').split(',')
 app.logger.info(f"Configuring CORS with allowed origins: {CORS_ORIGINS}")
@@ -38,29 +50,6 @@ else:
          allow_headers=["Content-Type", "Authorization", "X-Requested-With"],
          expose_headers=["Content-Disposition"],
          max_age=86400)
-
-
-
-
-
-
-
-
-
-
-
-'
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler()]
-)
-
-# Get environment variables with Railway-compatible defaults
-MAX_WORKERS = int(os.environ.get('MAX_WORKERS', '2'))
-PORT = int(os.environ.get('PORT', '5000'))  # Railway provides PORT env var
-app.logger.info(f"Configured with MAX_WORKERS={MAX_WORKERS}, PORT={PORT}")
 
 # Allowed file extensions
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
