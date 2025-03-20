@@ -20,8 +20,36 @@ app = Flask(__name__)
 # Configure CORS - Accept requests from all origins during development
 CORS_ORIGINS = os.environ.get('ALLOWED_ORIGINS', '*').split(',')
 app.logger.info(f"Configuring CORS with allowed origins: {CORS_ORIGINS}")
-CORS(app, resources={r"/*": {"origins": CORS_ORIGINS}})
 
+# Configure CORS more comprehensively
+if '*' in CORS_ORIGINS:
+    CORS(app, 
+         resources={r"/*": {"origins": "*"}},
+         supports_credentials=False,
+         methods=["GET", "POST", "OPTIONS"],
+         allow_headers=["Content-Type", "Authorization", "X-Requested-With"],
+         expose_headers=["Content-Disposition"],
+         max_age=86400)  # Cache preflight requests for 24 hours
+else:
+    CORS(app, 
+         resources={r"/*": {"origins": CORS_ORIGINS}},
+         supports_credentials=True,
+         methods=["GET", "POST", "OPTIONS"],
+         allow_headers=["Content-Type", "Authorization", "X-Requested-With"],
+         expose_headers=["Content-Disposition"],
+         max_age=86400)
+
+
+
+
+
+
+
+
+
+
+
+'
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
