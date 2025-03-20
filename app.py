@@ -10,8 +10,10 @@ import gc  # Garbage collection
 import resource
 import sys
 import json
+import threading
+import traceback
 from werkzeug.utils import secure_filename
-from set_detector import identify_sets, load_models, ModelLoadError
+from set_detector import identify_sets, load_models, ModelLoadError, get_model_loading_status
 
 # Add this to the top of your app.py file, after imports
 from flask import Flask, request, jsonify, send_file, after_this_request
@@ -84,17 +86,55 @@ last_cleanup = time.time()
 # Track application startup time
 app_startup_time = time.time()
 
-# Try to load models, but don't fail startup if they can't be loaded
-# This allows health checks to pass while models initialize
-try:
-    app.logger.info("Attempting to load models on startup...")
-    load_models()
-    app.logger.info("Models loaded successfully!")
-    models_available = True
-except Exception as e:
-    app.logger.error(f"Failed to load models on startup: {e}", exc_info=True)
-    app.logger.warning("Application will continue without models - health checks will pass")
-    models_available = False
+# Model loading variables
+models_available = False
+model_loading_thread = None
+model_loading_lock = threading.Lock()
+max_model_loading_attempts = 5  # Maximum number of attempts to load models
+
+def background_model_loading():
+    """Function to load models in background thread with retries"""
+    global models_available, model_loading_thread
+    
+    with model_loading_lock:
+        app.logger.info("Background model loading started")
+        
+        for attempt in range(1, max_model_loading_attempts + 1):
+            try:
+                app.logger.info(f"Attempt {attempt}/{max_model_loading_attempts} to load models")
+                load_models(force_reload=(attempt > 1))
+                models_available = True
+                app.logger.info("Models loaded successfully in background thread!")
+                return
+            except Exception as e:
+                app.logger.error(f"Failed to load models (attempt {attempt}/{max_model_loading_attempts}): {e}")
+                app.logger.error(traceback.format_exc())
+                
+                # Wait before next attempt, with increasing backoff
+                if attempt < max_model_loading_attempts:
+                    sleep_time = min(30, 5 * attempt)  # Max 30 seconds between attempts
+                    app.logger.info(f"Waiting {sleep_time} seconds before next attempt...")
+                    time.sleep(sleep_time)
+                
+        app.logger.error(f"Failed to load models after {max_model_loading_attempts} attempts")
+
+# Start background model loading
+def start_background_model_loading():
+    """Start a background thread to load models"""
+    global model_loading_thread
+    
+    with model_loading_lock:
+        # Only start a new thread if no thread is running
+        if model_loading_thread is None or not model_loading_thread.is_alive():
+            model_loading_thread = threading.Thread(target=background_model_loading)
+            model_loading_thread.daemon = True  # Thread will exit when main thread exits
+            model_loading_thread.start()
+            app.logger.info("Started background model loading thread")
+        else:
+            app.logger.info("Background model loading thread already running")
+
+# Start model loading at startup
+start_background_model_loading()
 
 def check_memory_pressure():
     """Check if system is under memory pressure with improved reliability"""
@@ -180,7 +220,37 @@ def detect_sets():
         
     # Check if models were loaded successfully
     if not models_available:
-        return jsonify({'error': 'Model initialization failed. Please contact the administrator.'}), 503
+        # Get current loading status
+        loading_status = get_model_loading_status()
+        
+        # If models are still loading, return a message with estimated time
+        if loading_status["state"] == "in_progress":
+            return jsonify({
+                'error': 'Models are still loading. Please try again in a few moments.',
+                'status': loading_status
+            }), 503
+        
+        # If models failed to load, restart loading and return error
+        if loading_status["state"] == "failed":
+            # Try to restart model loading
+            start_background_model_loading()
+            
+            return jsonify({
+                'error': 'Model initialization failed. The system is attempting to reload models. Please try again later.',
+                'status': loading_status
+            }), 503
+            
+        # If models haven't started loading, start loading and return message
+        if loading_status["state"] == "not_started":
+            start_background_model_loading()
+            
+            return jsonify({
+                'error': 'Models are preparing to load. Please try again in a few moments.',
+                'status': loading_status
+            }), 503
+            
+        # Generic error message if we can't determine the state
+        return jsonify({'error': 'Models are not available. Please try again later.'}), 503
     
     # Cleanup old sessions
     cleanup_old_sessions()
@@ -330,26 +400,60 @@ def health_check():
         memory_usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
         memory_usage_mb = memory_usage / 1024  # Convert to MB on Linux
         
-        # Models status - don't fail health check if models aren't loaded
-        models_status = "available" if models_available else "initializing"
+        # Get detailed model loading status
+        loading_status = get_model_loading_status()
+        
+        # Models status - more detailed reporting
+        if models_available:
+            models_status = "available"
+        else:
+            if loading_status["state"] == "in_progress":
+                models_status = "initializing"
+            elif loading_status["state"] == "failed":
+                models_status = "failed"
+            else:
+                models_status = "not_started"
         
         # Calculate uptime
         uptime_seconds = time.time() - app_startup_time
+        
+        # Determine overall status
+        overall_status = "healthy"
+        if models_status == "failed" and uptime_seconds > 180:  # After startup period
+            overall_status = "degraded"
         
         memory_info = {
             'active_sessions': len(current_sessions),
             'memory_usage_mb': round(memory_usage_mb, 2),
             'models_status': models_status,
+            'model_loading_details': loading_status,
             'uptime_seconds': round(uptime_seconds, 2),
             'worker_count': MAX_WORKERS,
             'max_sessions': MAX_SESSIONS,
             'session_ttl_seconds': SESSION_TTL
         }
         
+        # Check if model loading thread is stuck
+        if model_loading_thread and model_loading_thread.is_alive():
+            memory_info['model_loading_thread_active'] = True
+        else:
+            memory_info['model_loading_thread_active'] = False
+            
+            # If thread is not active but models are not available and not in "failed" state,
+            # consider restarting it
+            if not models_available and loading_status["state"] != "failed":
+                app.logger.warning("Model loading thread is not active but models not available. Restarting thread.")
+                start_background_model_loading()
+                memory_info['model_loading_restarted'] = True
+        
+        # Add more detailed status information
+        if loading_status["error"]:
+            memory_info['model_loading_error'] = loading_status["error"]
+        
         # Always report healthy for Railway health checks
         # This is crucial - we want the container to stay up even if models are still loading
         response = jsonify({
-            'status': 'healthy',
+            'status': overall_status,
             'models_status': models_status,
             'memory': memory_info
         })
@@ -358,6 +462,7 @@ def health_check():
         return response, 200
     except Exception as e:
         app.logger.error(f"Error in health check: {e}")
+        app.logger.error(traceback.format_exc())
         # Still return status 200 for Railway health checks to pass
         response = jsonify({
             'status': 'warning',
@@ -402,13 +507,17 @@ def debug_environment():
             else:
                 directory_structure[path] = "Path doesn't exist"
                 
-        models_info = "Not available - models not loaded"
-        if models_available:
-            try:
-                # Try to get some basic model info without leaking sensitive details
-                models_info = "Models loaded successfully"
-            except:
-                models_info = "Error retrieving model info"
+        # Get model loading status
+        loading_status = get_model_loading_status()
+        
+        # Check if model loading thread is active
+        thread_status = "active" if (model_loading_thread and model_loading_thread.is_alive()) else "inactive"
+                
+        models_info = {
+            "available": models_available,
+            "loading_status": loading_status,
+            "loading_thread": thread_status
+        }
                 
         debug_info = {
             'environment': env_vars,
@@ -424,6 +533,29 @@ def debug_environment():
         return response
     except Exception as e:
         app.logger.error(f"Error in debug endpoint: {e}")
+        app.logger.error(traceback.format_exc())
+        return jsonify({'error': str(e)}), 500
+
+# New endpoint to force model reload
+@app.route('/api/admin/reload_models', methods=['POST'])
+def reload_models():
+    """Admin endpoint to force model reloading."""
+    # This should be protected in production
+    api_key = request.headers.get('X-API-Key', '')
+    if api_key != os.environ.get('ADMIN_API_KEY', 'set-detector-reload'):
+        return jsonify({'error': 'Unauthorized'}), 401
+        
+    try:
+        app.logger.info("Forcing model reload")
+        start_background_model_loading()
+        
+        return jsonify({
+            'status': 'reload_initiated',
+            'message': 'Model reload initiated in background thread'
+        })
+    except Exception as e:
+        app.logger.error(f"Error forcing model reload: {e}")
+        app.logger.error(traceback.format_exc())
         return jsonify({'error': str(e)}), 500
 
 # If this is the main module, run the app
